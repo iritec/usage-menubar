@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Usage Menubar</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <p class="eyebrow">Usage Monitor</p>
+        <button id="refresh-button" class="ghost-button">Refresh</button>
+      </header>
+
+      <section class="loading-skeleton" id="loading-skeleton">
+        <div class="skeleton-card">
+          <div class="skeleton-line skeleton-title"></div>
+          <div class="skeleton-line skeleton-short"></div>
+          <div class="skeleton-bar"></div>
+          <div class="skeleton-line skeleton-short"></div>
+          <div class="skeleton-bar"></div>
+        </div>
+        <div class="skeleton-card">
+          <div class="skeleton-line skeleton-title"></div>
+          <div class="skeleton-line skeleton-short"></div>
+          <div class="skeleton-bar"></div>
+        </div>
+      </section>
+
+      <section class="providers" id="providers"></section>
+
+      <footer class="footer">
+        <p id="last-updated">Last updated: -</p>
+      </footer>
+    </main>
+
+    <template id="provider-template">
+      <article class="provider-card">
+        <div class="provider-header">
+          <div>
+            <p class="provider-name"></p>
+            <p class="provider-status"></p>
+          </div>
+          <div class="provider-actions">
+            <button class="ghost-button login-button">Login</button>
+            <button class="ghost-button open-button">Open</button>
+          </div>
+        </div>
+        <div class="item-list"></div>
+        <p class="provider-message"></p>
+      </article>
+    </template>
+
+    <template id="item-template">
+      <section class="usage-item">
+        <div class="usage-label-row">
+          <p class="usage-label"></p>
+          <p class="usage-percent"></p>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill"></div>
+        </div>
+        <p class="usage-reset"></p>
+      </section>
+    </template>
+
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

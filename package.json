@@ -1,0 +1,44 @@
+{
+  "name": "usage-menubar",
+  "version": "0.1.0",
+
+  "description": "macOS menubar app for Claude and Codex usage tracking",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "start": "env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-vite preview",
+    "dev": "env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-vite dev",
+    "build": "electron-vite build",
+    "test": "node --test",
+    "pack": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --dir",
+    "dist": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.kingcoding.usage-menubar",
+    "productName": "Usage Menubar",
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "zip"
+      ]
+    }
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^35.1.4",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.1.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "chrome-devtools-mcp": "^0.20.0"
+  }
+}

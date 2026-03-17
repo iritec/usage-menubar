@@ -3,8 +3,6 @@ const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
-const { Client } = require("@modelcontextprotocol/sdk/client");
-const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio.js");
 const {
   app,
   BrowserWindow,
@@ -21,6 +19,41 @@ const customUserDataDir = process.env.USAGE_MONITOR_USER_DATA_DIR;
 
 if (customUserDataDir) {
   app.setPath("userData", customUserDataDir);
+}
+
+// --- Settings persistence ---
+let cachedTrayMode = null;
+
+function getSettingsPath() {
+  return path.join(app.getPath("userData"), "settings.json");
+}
+
+function loadSettings() {
+  try {
+    return JSON.parse(fs.readFileSync(getSettingsPath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveSettings(settings) {
+  fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2));
+}
+
+function getTrayMode() {
+  if (cachedTrayMode === null) {
+    const settings = loadSettings();
+    cachedTrayMode = settings.trayMode === "session" ? "session" : "weekly";
+  }
+  return cachedTrayMode;
+}
+
+function setTrayMode(mode) {
+  const validated = mode === "session" ? "session" : "weekly";
+  cachedTrayMode = validated;
+  const settings = loadSettings();
+  settings.trayMode = validated;
+  saveSettings(settings);
 }
 
 const CLAUDE_LABELS = [
@@ -192,7 +225,9 @@ function parseCodexUsage(text) {
 
 function getPrimaryMetric(items, preferredIds) {
   for (const id of preferredIds) {
-    const match = items.find((item) => item.id === id);
+    const match = items.find(
+      (item) => item.id === id || item.id.includes(id) || (item.label && item.label.includes(id)),
+    );
     if (match && typeof match.remainingPercent === "number") {
       return match.remainingPercent;
     }
@@ -204,15 +239,21 @@ function getPrimaryMetric(items, preferredIds) {
 function formatTrayTitle(currentState) {
   const claude = currentState.providers.claude;
   const codex = currentState.providers.codex;
+  const mode = getTrayMode();
+
+  const claudePreferred =
+    mode === "session"
+      ? ["current-session", "weekly-all-models"]
+      : ["weekly-all-models", "current-session"];
+  const codexPreferred =
+    mode === "session"
+      ? ["5時間", "5h", "5-hour", "5 hour"]
+      : ["週あたり", "weekly", "5時間", "5h", "5-hour", "5 hour"];
 
   const claudeRemaining =
-    claude.status === "ok"
-      ? getPrimaryMetric(claude.items, ["current-session", "weekly-all-models"])
-      : null;
+    claude.status === "ok" ? getPrimaryMetric(claude.items, claudePreferred) : null;
   const codexRemaining =
-    codex.status === "ok"
-      ? getPrimaryMetric(codex.items, ["5h", "5-hours", "5", "5hour", "5-hours-of-usage-limit"])
-      : null;
+    codex.status === "ok" ? getPrimaryMetric(codex.items, codexPreferred) : null;
 
   const parts = [];
   parts.push(`C ${claudeRemaining === null ? "--" : `${claudeRemaining}%`}`);
@@ -410,266 +451,99 @@ async function importChromeCookies(provider) {
   }
 }
 
-function getChromeDevToolsActivePortPath() {
-  return path.join(os.homedir(), "Library", "Application Support", "Google", "Chrome", "DevToolsActivePort");
-}
-
-function getChromeDevToolsSocketEndpoint() {
-  const activePortPath = getChromeDevToolsActivePortPath();
-  if (!fs.existsSync(activePortPath)) {
-    return null;
-  }
-
+function formatResetTime(isoString) {
+  if (!isoString) return null;
   try {
-    const [port, wsPath] = fs.readFileSync(activePortPath, "utf8").trim().split(/\r?\n/);
-    return /^\d+$/.test(port) && wsPath ? `ws://127.0.0.1:${port}${wsPath}` : null;
+    const date = new Date(isoString);
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    const hours = date.getHours();
+    const minutes = String(date.getMinutes()).padStart(2, "0");
+    return `リセット: ${month}月${day}日 ${hours}:${minutes}`;
   } catch {
     return null;
   }
 }
 
-function hasChromeDebugTarget() {
-  return Boolean(
-    getEnvValue("USAGE_MONITOR_CHROME_WS_ENDPOINT") ||
-      getEnvValue("USAGE_MONITOR_CHROME_BROWSER_URL") ||
-      getChromeDevToolsSocketEndpoint(),
-  );
-}
-
-function getChromeMcpStrategies() {
-  const wsEndpoint = getEnvValue("USAGE_MONITOR_CHROME_WS_ENDPOINT");
-  const debugSocketEndpoint = getChromeDevToolsSocketEndpoint();
-  const browserUrl = getEnvValue("USAGE_MONITOR_CHROME_BROWSER_URL");
-  const strategies = [];
-
-  if (wsEndpoint) {
-    strategies.push({
-      label: "explicit-ws-endpoint",
-      args: [`--wsEndpoint=${wsEndpoint}`],
-    });
-  }
-
-  strategies.push({
-    label: "auto-connect",
-    args: ["--autoConnect"],
-  });
-
-  if (debugSocketEndpoint) {
-    strategies.push({
-      label: "devtools-active-port",
-      args: [`--wsEndpoint=${debugSocketEndpoint}`],
-    });
-  }
-
-  if (browserUrl) {
-    strategies.push({
-      label: "explicit-browser-url",
-      args: [`--browserUrl=${browserUrl}`],
-    });
-  }
-
-  return strategies;
-}
-
-function getChromeDevtoolsMcpCliPath() {
-  const entryPath = require.resolve("chrome-devtools-mcp");
-  return path.join(path.dirname(entryPath), "bin", "chrome-devtools-mcp.js");
-}
-
-function extractToolText(result) {
-  if (!result || !Array.isArray(result.content)) {
-    return "";
-  }
-  return result.content
-    .filter((entry) => entry && entry.type === "text" && typeof entry.text === "string")
-    .map((entry) => entry.text)
-    .join("\n");
-}
-
-function extractJsonFromToolText(text) {
-  const match = text.match(/```json\s*([\s\S]*?)```/i) || text.match(/```\s*([\s\S]*?)```/i);
-  if (!match) {
-    return null;
-  }
+async function collectClaudeUsageViaApi(provider) {
+  const ses = session.fromPartition(provider.partition);
+  const origin = new URL(provider.url).origin;
 
   try {
-    return JSON.parse(match[1]);
-  } catch {
-    return null;
-  }
-}
+    const orgsResponse = await ses.fetch(`${origin}/api/organizations`);
 
-function getSelectedPageId(text) {
-  const match = text.match(/^\s*(\d+):.*\[selected\]\s*$/m);
-  return match ? Number(match[1]) : null;
-}
+    if (!orgsResponse.ok) {
+      if (orgsResponse.status === 401 || orgsResponse.status === 403) {
+        return { status: "needs-auth", items: [], message: `${provider.label} needs login` };
+      }
 
-function isChromeUnavailableResult(result) {
-  const text = extractToolText(result);
-  return Boolean(result?.isError) && /could not connect to chrome|devtoolsactiveport|check if chrome is running/i.test(text);
-}
+      return null;
+    }
 
-async function callChromeTool(client, name, args, timeoutMs = 15000) {
-  return Promise.race([
-    client.callTool({ name, arguments: args }),
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(`${name} timed out after ${timeoutMs}ms`)), timeoutMs);
-    }),
-  ]);
-}
+    const orgs = await orgsResponse.json();
+    if (!Array.isArray(orgs) || orgs.length === 0) {
+      return null;
+    }
 
-async function createChromeMcpContext() {
-  const cliPath = getChromeDevtoolsMcpCliPath();
-  const chromeDebugTargetDetected = hasChromeDebugTarget();
+    const orgId = orgs[0].uuid;
 
-  for (const strategy of getChromeMcpStrategies()) {
-    const transport = new StdioClientTransport({
-      command: process.execPath,
-      args: [cliPath, ...strategy.args, "--no-usage-statistics"],
-      env: {
-        ELECTRON_RUN_AS_NODE: "1",
-        CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1",
-      },
-      stderr: "pipe",
-    });
+    const usageResponse = await ses.fetch(`${origin}/api/organizations/${orgId}/usage`);
+    if (!usageResponse.ok) {
+      return null;
+    }
 
-    let stderr = "";
-    if (transport.stderr) {
-      transport.stderr.on("data", (chunk) => {
-        stderr += chunk.toString();
+    const usage = await usageResponse.json();
+    const items = [];
+
+    if (usage.five_hour && typeof usage.five_hour.utilization === "number") {
+      items.push({
+        id: "current-session",
+        label: "Current session",
+        usedPercent: usage.five_hour.utilization,
+        remainingPercent: Math.max(0, 100 - usage.five_hour.utilization),
+        resetText: formatResetTime(usage.five_hour.resets_at),
+        detail: `${usage.five_hour.utilization}% used`,
       });
     }
 
-    try {
-      const client = new Client({ name: "usage-menubar", version: "0.1.0" }, { capabilities: {} });
-      await client.connect(transport);
-
-      const probeResult = await callChromeTool(client, "list_pages", {}, 8000);
-      if (isChromeUnavailableResult(probeResult)) {
-        await transport.close();
-        continue;
-      }
-
-      return {
-        client,
-        transport,
-        strategy: strategy.label,
-        stderr,
-      };
-    } catch {
-      await transport.close().catch(() => {});
+    if (usage.seven_day && typeof usage.seven_day.utilization === "number") {
+      items.push({
+        id: "weekly-all-models",
+        label: "All models",
+        usedPercent: usage.seven_day.utilization,
+        remainingPercent: Math.max(0, 100 - usage.seven_day.utilization),
+        resetText: formatResetTime(usage.seven_day.resets_at),
+        detail: `${usage.seven_day.utilization}% used`,
+      });
     }
-  }
 
-  return {
-    context: null,
-    chromeDebugTargetDetected,
-  };
-}
+    if (usage.seven_day_sonnet && typeof usage.seven_day_sonnet.utilization === "number") {
+      items.push({
+        id: "weekly-sonnet",
+        label: "Sonnet only",
+        usedPercent: usage.seven_day_sonnet.utilization,
+        remainingPercent: Math.max(0, 100 - usage.seven_day_sonnet.utilization),
+        resetText: formatResetTime(usage.seven_day_sonnet.resets_at),
+        detail: `${usage.seven_day_sonnet.utilization}% used`,
+      });
+    }
 
-async function closeChromeMcpContext(context) {
-  if (!context?.transport) {
-    return;
-  }
-  await context.transport.close().catch(() => {});
-}
+    if (items.length === 0) {
+      return null;
+    }
 
-async function collectUsageFromChrome(provider, chromeContext) {
-  if (!chromeContext?.client) {
+    return {
+      status: "ok",
+      items,
+      message: `${provider.label} updated`,
+    };
+  } catch (error) {
+
     return null;
   }
-
-  let pageId = null;
-  try {
-    const openResult = await callChromeTool(
-      chromeContext.client,
-      "new_page",
-      { url: provider.url, timeout: 15000 },
-      20000,
-    );
-    if (openResult?.isError) {
-      if (isChromeUnavailableResult(openResult)) {
-        return null;
-      }
-
-      return {
-        status: "error",
-        chromeConnected: false,
-        items: [],
-        message: extractToolText(openResult) || `${provider.label} refresh failed`,
-      };
-    }
-
-    pageId = getSelectedPageId(extractToolText(openResult));
-
-    if (provider.waitForTexts?.length) {
-      await callChromeTool(
-        chromeContext.client,
-        "wait_for",
-        { text: provider.waitForTexts, timeout: 6000 },
-        7000,
-      ).catch(() => {});
-    }
-
-    const evaluateResult = await callChromeTool(
-      chromeContext.client,
-      "evaluate_script",
-      {
-        function: `() => ({
-          url: window.location.href,
-          title: document.title,
-          text: document.body ? document.body.innerText : ""
-        })`,
-      },
-      10000,
-    );
-    const snapshot = extractJsonFromToolText(extractToolText(evaluateResult));
-
-    if (!snapshot) {
-      return {
-        status: "error",
-        chromeConnected: false,
-        items: [],
-        message: `${provider.label} response could not be read from Chrome`,
-      };
-    }
-
-    if (looksLikeAuthPage(snapshot.text, snapshot.url)) {
-      return {
-        status: "needs-auth",
-        chromeConnected: false,
-        items: [],
-        message: `${provider.label} needs login in Chrome`,
-        pageUrl: snapshot.url,
-      };
-    }
-
-    try {
-      const items = provider.parser(snapshot.text);
-      return {
-        status: "ok",
-        chromeConnected: true,
-        items,
-        message: `${provider.label} updated from Chrome`,
-        pageUrl: snapshot.url,
-      };
-    } catch (error) {
-      return {
-        status: "error",
-        chromeConnected: true,
-        items: [],
-        message: error.message || `${provider.label} refresh failed`,
-        pageUrl: snapshot.url,
-      };
-    }
-  } finally {
-    if (pageId !== null) {
-      await callChromeTool(chromeContext.client, "close_page", { pageId }, 5000).catch(() => {});
-    }
-  }
 }
 
-const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const HIDDEN_SCRAPE_DELAY_MS = 3500;
 
 const PROVIDERS = {
@@ -679,7 +553,6 @@ const PROVIDERS = {
     url: getEnvValue("USAGE_MONITOR_CLAUDE_URL") || "https://claude.ai/settings/usage",
     partition: "persist:usage-claude",
     chromeDomains: ["claude.ai"],
-    waitForTexts: ["現在のセッション", "Current session", "週間制限", "プラン使用制限"],
     parser: parseClaudeUsage,
   },
   codex: {
@@ -765,7 +638,7 @@ function setProviderState(providerId, nextState) {
 function createPopupWindow() {
   popupWindow = new BrowserWindow({
     width: 420,
-    height: 520,
+    height: 680,
     show: false,
     frame: false,
     resizable: false,
@@ -780,6 +653,12 @@ function createPopupWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  popupWindow.on("blur", () => {
+    if (!isDev && popupWindow && !popupWindow.isDestroyed()) {
+      popupWindow.hide();
+    }
   });
 
   if (rendererUrl) {
@@ -818,19 +697,6 @@ function togglePopupWindow() {
 function buildContextMenu() {
   return Menu.buildFromTemplate([
     {
-      label: "Refresh",
-      click: () => refreshAll(true),
-    },
-    {
-      label: "Open Claude Usage",
-      click: () => shell.openExternal(PROVIDERS.claude.url),
-    },
-    {
-      label: "Open Codex Usage",
-      click: () => shell.openExternal(PROVIDERS.codex.url),
-    },
-    { type: "separator" },
-    {
       label: "Quit",
       click: () => app.quit(),
     },
@@ -839,7 +705,6 @@ function buildContextMenu() {
 
 function createTray() {
   tray = new Tray(createTrayIcon());
-  tray.setContextMenu(buildContextMenu());
   tray.on("click", togglePopupWindow);
   tray.on("right-click", () => tray.popUpContextMenu(buildContextMenu()));
   updateTrayTitle();
@@ -858,7 +723,6 @@ async function collectUsage(provider) {
       show: false,
       webPreferences: {
         partition: provider.partition,
-        sandbox: true,
       },
     });
 
@@ -952,30 +816,25 @@ async function refreshProvider(providerId, isManual = false) {
   });
 
   try {
-    let result = await collectUsage(provider);
+    // Always import Chrome cookies first to ensure session is fresh
+    await importChromeCookies(provider);
 
-    // Try cookie import as fallback
-    if (result.status !== "ok") {
-      const imported = await importChromeCookies(provider);
-      if (imported.importedCount > 0) {
-        const retryResult = await collectUsage(provider);
-        if (retryResult.status === "ok") {
-          retryResult.message = `${provider.label} updated from Chrome`;
-          result = retryResult;
-        } else if (retryResult.status === "needs-auth") {
-          retryResult.status = "browser-auth";
-          retryResult.message = `${provider.label} is already logged in on Chrome`;
-          result = retryResult;
-        }
-      }
+    let result = null;
+
+    if (providerId === "claude") {
+      // Claude: use direct API (no hidden BrowserWindow needed)
+      result = await collectClaudeUsageViaApi(provider);
+    } else {
+      // Codex: use hidden BrowserWindow scraping
+      result = await collectUsage(provider);
     }
 
-    // If still not ok, prompt user to log in via the app
-    if (result.status !== "ok" && result.status !== "needs-auth") {
+    // If still not ok, prompt user
+    if (!result || (result.status !== "ok" && result.status !== "needs-auth")) {
       result = {
         status: "needs-auth",
         items: [],
-        message: `${provider.label} needs login — click Login below`,
+        message: `Chromeで${provider.label}にログイン後、更新してください`,
       };
     }
 
@@ -1028,36 +887,25 @@ ipcMain.handle("open-login", (_event, providerId) => {
   if (!provider) {
     return;
   }
-
-  const loginWindow = new BrowserWindow({
-    width: 900,
-    height: 700,
-    title: `Login - ${provider.label}`,
-    webPreferences: {
-      partition: provider.partition,
-      sandbox: true,
-    },
-  });
-
-  loginWindow.loadURL(provider.url, {
-    userAgent:
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-  });
-
-  loginWindow.webContents.on("did-navigate", (_event, url) => {
-    if (isExpectedUsageLocation(url, provider.url)) {
-      setTimeout(() => {
-        loginWindow.close();
-        refreshAll(true);
-      }, 2000);
-    }
-  });
+  // Open in user's Chrome so they can log in with their real session
+  shell.openExternal(provider.url);
 });
 ipcMain.handle("open-external", (_event, providerId) => {
   const provider = PROVIDERS[providerId];
   if (provider) {
     shell.openExternal(provider.url);
   }
+});
+
+ipcMain.handle("get-tray-mode", () => getTrayMode());
+ipcMain.handle("set-tray-mode", (_event, mode) => {
+  setTrayMode(mode);
+  updateTrayTitle();
+  return mode;
+});
+
+ipcMain.handle("quit-app", () => {
+  app.quit();
 });
 
 app.whenReady().then(() => {

@@ -10,7 +10,9 @@
     "build": "electron-vite build",
     "test": "node --test",
     "pack": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --dir",
-    "dist": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac"
+    "dist": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac",
+    "dist:mac:prod": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --arm64",
+    "dist:mac:prod:x64": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --x64"
   },
   "build": {
     "appId": "com.kingcoding.usage-menubar",
@@ -19,9 +21,15 @@
       "dist/**/*",
       "package.json"
     ],
+    "afterSign": "./scripts/notarize.js",
     "mac": {
       "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "target": [
+        "dmg",
         "zip"
       ]
     }
@@ -37,8 +45,5 @@
     "electron-builder": "^25.1.8",
     "electron-vite": "^3.1.0"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "chrome-devtools-mcp": "^0.20.0"
-  }
+  "dependencies": {}
 }

@@ -1,29 +1,26 @@
 # Usage Menubar
 
+[Claude](https://claude.ai) と [Codex](https://chatgpt.com/codex) の使用状況をリアルタイムで追跡する macOS メニューバーアプリです。エディタを離れずに残りのクォータをひと目で確認できます。
+
 A macOS menubar app that tracks your [Claude](https://claude.ai) and [Codex](https://chatgpt.com/codex) usage in real time. See remaining quotas at a glance without leaving your editor.
 
-<p align="center">
-  <img src="docs/popup.png" alt="Usage Menubar popup" width="360" />
-</p>
+## 機能 / Features
 
-## Features
+- **メニューバー表示** — 残りパーセンテージ (`C 81%  O 97%`) が macOS メニューバーに常時表示
+- **表示モード切替** — メニューバーに表示する値を「週間制限」と「セッション」で切替可能
+- **Claude トラッキング** — 現在のセッション、全モデル、Sonnet のみの使用量とリセット時刻（API 直接取得）
+- **Codex トラッキング** — 5時間制限と週間制限、モデル別の内訳
+- **Chrome Cookie インポート** — Chrome のログインセッションを自動インポート。再ログイン不要
+- **自動更新** — バックグラウンドで10分ごとに更新
 
-- **Menubar display** — remaining percentages (`C 95%  O 99%`) always visible in the macOS menu bar
-- **Claude tracking** — current session, all models, and Sonnet-only usage with reset timers
-- **Codex tracking** — 5-hour and weekly limits, per-model breakdowns
-- **Chrome cookie import** — automatically imports your Chrome login session so you don't have to log in again
-- **Chrome DevTools bridge** — connects to a running Chrome via DevTools Protocol for seamless data collection
-- **Auto-refresh** — updates every 5 minutes in the background
-- **Built-in login** — open the provider login page directly from the app when needed
-
-## Requirements
+## 必要環境 / Requirements
 
 - macOS
-- Node.js ≥ 18
+- Node.js >= 18
 - [pnpm](https://pnpm.io/)
-- Active [Claude Pro](https://claude.ai) and/or [Codex](https://chatgpt.com/codex) subscription
+- [Claude Pro](https://claude.ai) または [Codex](https://chatgpt.com/codex) のサブスクリプション
 
-## Install
+## インストール / Install
 
 ```bash
 git clone https://github.com/iritec/usage-menubar.git
@@ -31,39 +28,37 @@ cd usage-menubar
 pnpm install
 ```
 
-## Usage
+## 使い方 / Usage
 
-### Development
+### 開発モード
 
 ```bash
 pnpm dev
 ```
 
-Click the bar-chart icon in the menubar to open the popup, then press **Refresh** to pull your latest usage.
+メニューバーのアイコンをクリックしてポップアップを開き、**更新** ボタンで最新の使用状況を取得します。
 
-### First-time setup
+### 初回セットアップ
 
-1. Click **Login** next to Claude or Codex to authenticate in the built-in browser
-2. Once logged in, click **Refresh** — your remaining quotas will appear
-3. The app remembers your session across restarts
+1. Chrome で Claude / Codex にログイン
+2. アプリを起動 — Chrome の Cookie が自動インポートされ、データが表示されます
+3. セッションは再起動後も保持されます
 
-> **Tip:** If you're already logged into Claude/Codex in Chrome, the app can import your cookies automatically — no manual login needed.
+> **ヒント:** データが表示されない場合は、ポップアップの **更新** ボタンを押してください。ログインボタンを押すと Chrome でログインページが開きます。
 
-### Build
+### ビルド
 
 ```bash
-pnpm dist      # produces a distributable .zip for macOS
+pnpm dist      # macOS 用の配布可能な .zip を生成
 ```
 
-## Configuration
+## 環境変数 / Configuration
 
-| Environment variable | Description |
+| 環境変数 | 説明 |
 |---|---|
-| `USAGE_MONITOR_CLAUDE_URL` | Override the Claude usage page URL |
-| `USAGE_MONITOR_CODEX_URL` | Override the Codex usage page URL |
-| `USAGE_MONITOR_CHROME_WS_ENDPOINT` | Chrome DevTools WebSocket endpoint |
-| `USAGE_MONITOR_CHROME_BROWSER_URL` | Chrome DevTools browser URL |
-| `USAGE_MONITOR_USER_DATA_DIR` | Custom Electron user data directory |
+| `USAGE_MONITOR_CLAUDE_URL` | Claude 使用状況ページの URL を上書き |
+| `USAGE_MONITOR_CODEX_URL` | Codex 使用状況ページの URL を上書き |
+| `USAGE_MONITOR_USER_DATA_DIR` | カスタム Electron ユーザーデータディレクトリ |
 
 ## Built with KingCoding
 

@@ -179,6 +179,37 @@ function findCodexTitle(lines, percentIndex) {
   return null;
 }
 
+const CODEX_LABEL_MAP = [
+  { match: /5時間の使用制限|5.?hour/i, label: "5-hour limit" },
+  { match: /週あたりの使用制限|weekly/i, label: "Weekly limit" },
+];
+
+function normalizeCodexLabel(raw) {
+  for (const entry of CODEX_LABEL_MAP) {
+    if (entry.match.test(raw)) {
+      return entry.label;
+    }
+  }
+  // For model-specific labels like "GPT-5.3-Codex-Spark 5時間の使用制限"
+  const modelMatch = raw.match(/^([\w.-]+)\s+/);
+  if (modelMatch) {
+    const rest = raw.slice(modelMatch[0].length);
+    for (const entry of CODEX_LABEL_MAP) {
+      if (entry.match.test(rest)) {
+        return `${modelMatch[1]} ${entry.label}`;
+      }
+    }
+  }
+  return raw;
+}
+
+function normalizeResetText(text) {
+  if (!text) return null;
+  // "リセット：15:31" → "Resets: 15:31"
+  // "リセット：2026/03/19 4:55" → "Resets: 2026/03/19 4:55"
+  return text.replace(/^リセット\s*[：:]\s*/i, "Resets: ");
+}
+
 function parseCodexUsage(text) {
   const lines = normalizeLines(text);
   const items = [];
@@ -203,12 +234,15 @@ function parseCodexUsage(text) {
     }
 
     const remainingPercent = parsePercent(line);
-    const resetText = findNearby(lines, remainingOnNextLine ? index + 1 : index, looksLikeReset, 2);
+    const resetText = normalizeResetText(
+      findNearby(lines, remainingOnNextLine ? index + 1 : index, looksLikeReset, 2),
+    );
     seenTitles.add(title);
 
+    const label = normalizeCodexLabel(title);
     items.push({
-      id: title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""),
-      label: title,
+      id: label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""),
+      label,
       remainingPercent,
       usedPercent: remainingPercent === null ? null : Math.max(0, 100 - remainingPercent),
       resetText,

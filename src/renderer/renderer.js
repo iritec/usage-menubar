@@ -16,17 +16,17 @@ function formatTimestamp(value) {
 function formatStatus(status) {
   switch (status) {
     case "ok":
-      return "同期済み";
+      return "Synced";
     case "loading":
-      return "更新中";
+      return "Refreshing";
     case "needs-auth":
-      return "ログインが必要";
+      return "Login required";
     case "browser-auth":
-      return "Chrome接続済み";
+      return "Chrome connected";
     case "error":
-      return "更新失敗";
+      return "Update failed";
     default:
-      return "未取得";
+      return "Not loaded";
   }
 }
 
@@ -41,7 +41,7 @@ function renderUsageItem(item) {
   const fragment = itemTemplate.content.cloneNode(true);
   fragment.querySelector(".usage-label").textContent = item.label;
   fragment.querySelector(".usage-percent").textContent =
-    typeof item.remainingPercent === "number" ? `残り ${item.remainingPercent}%` : "N/A";
+    typeof item.remainingPercent === "number" ? `${item.remainingPercent}% left` : "N/A";
   fragment.querySelector(".usage-reset").textContent = item.resetText || item.detail || "";
   const fill = fragment.querySelector(".progress-fill");
   fill.style.width =
@@ -78,18 +78,18 @@ function renderProvider(providerId, provider) {
     if (provider.status === "needs-auth") {
       empty.innerHTML =
         '<svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
-        + '<span>Chromeでログイン後、更新ボタンを押してください</span>';
+        + '<span>Log in via Chrome, then press Refresh</span>';
     } else {
       empty.innerHTML =
         '<svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="4" height="9"/><rect x="10" y="7" width="4" height="14"/><rect x="17" y="3" width="4" height="18"/></svg>'
-        + '<span>使用データがまだありません</span>';
+        + '<span>No usage data yet</span>';
     }
     itemList.appendChild(empty);
   }
 
   const loginButton = fragment.querySelector(".login-button");
   if (provider.status === "needs-auth" || provider.status === "error") {
-    loginButton.textContent = "Chromeでログイン";
+    loginButton.textContent = "Login in Chrome";
     loginButton.addEventListener("click", () => {
       window.usageMonitor.openLogin(providerId);
     });
@@ -114,10 +114,10 @@ function render(state) {
   }
 
   lastUpdated.textContent = state.lastUpdatedAt
-    ? `最終更新: ${formatTimestamp(state.lastUpdatedAt)}`
-    : "読み込み中…";
+    ? `Last updated: ${formatTimestamp(state.lastUpdatedAt)}`
+    : "Loading…";
 
-  refreshButton.textContent = state.isRefreshing ? "更新中…" : "更新";
+  refreshButton.textContent = state.isRefreshing ? "Refreshing…" : "Refresh";
   refreshButton.disabled = !!state.isRefreshing;
 
   providersRoot.innerHTML = "";
@@ -127,7 +127,7 @@ function render(state) {
 }
 
 refreshButton.addEventListener("click", () => {
-  refreshButton.textContent = "更新中…";
+  refreshButton.textContent = "Refreshing…";
   refreshButton.disabled = true;
   window.usageMonitor.refreshAll();
 });

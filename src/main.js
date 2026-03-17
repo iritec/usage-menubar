@@ -459,7 +459,7 @@ function formatResetTime(isoString) {
     const day = date.getDate();
     const hours = date.getHours();
     const minutes = String(date.getMinutes()).padStart(2, "0");
-    return `リセット: ${month}月${day}日 ${hours}:${minutes}`;
+    return `Resets: ${month}/${day} ${hours}:${minutes}`;
   } catch {
     return null;
   }
@@ -834,7 +834,7 @@ async function refreshProvider(providerId, isManual = false) {
       result = {
         status: "needs-auth",
         items: [],
-        message: `Chromeで${provider.label}にログイン後、更新してください`,
+        message: `Log in to ${provider.label} in Chrome, then refresh`,
       };
     }
 

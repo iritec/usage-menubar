@@ -1,6 +1,6 @@
 {
   "name": "usage-menubar",
-  "version": "0.1.0",
+  "version": "0.2.0",
 
   "description": "macOS menubar app for Claude and Codex usage tracking",
   "main": "dist/main/index.js",
@@ -18,7 +18,9 @@
     "appId": "com.kingcoding.usage-menubar",
     "productName": "Usage Menubar",
     "files": [
-      "dist/**/*",
+      "dist/main/**/*",
+      "dist/preload/**/*",
+      "dist/renderer/**/*",
       "package.json"
     ],
     "afterSign": "./scripts/notarize.js",

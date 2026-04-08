@@ -40,10 +40,11 @@ function looksLikeReset(line) {
 }
 
 function looksLikeAuthPage(text, url) {
-  const authUrl = /(login|signin|sign-in|auth|oauth)/i.test(url || "");
-  const authText = /(log in|sign in|continue with google|continue with github|メールアドレス|メールで続行)/i.test(
-    text || "",
-  );
+  const authUrl = /(login|signin|sign-in|auth|oauth|accounts\.google|clerk\.|sso)/i.test(url || "");
+  const authText =
+    /(log in|sign in|sign up|continue with google|continue with github|continue with email|welcome back|create.*account|メールアドレス|メールで続行|ログイン|サインイン|page not found|ページが見つかりません)/i.test(
+      text || "",
+    );
   return authUrl || authText;
 }
 
@@ -115,6 +116,36 @@ function findCodexTitle(lines, percentIndex) {
   return null;
 }
 
+const CODEX_LABEL_MAP = [
+  { match: /5時間の使用制限|5.?hour/i, label: "5-hour limit" },
+  { match: /週あたりの使用制限|weekly/i, label: "Weekly limit" },
+];
+
+function normalizeCodexLabel(raw) {
+  for (const entry of CODEX_LABEL_MAP) {
+    if (entry.match.test(raw)) {
+      return entry.label;
+    }
+  }
+
+  const modelMatch = raw.match(/^([\w.-]+)\s+/);
+  if (modelMatch) {
+    const rest = raw.slice(modelMatch[0].length);
+    for (const entry of CODEX_LABEL_MAP) {
+      if (entry.match.test(rest)) {
+        return `${modelMatch[1]} ${entry.label}`;
+      }
+    }
+  }
+
+  return raw;
+}
+
+function normalizeResetText(text) {
+  if (!text) return null;
+  return text.replace(/^リセット\s*[：:]\s*/i, "Resets: ");
+}
+
 function parseCodexUsage(text) {
   const lines = normalizeLines(text);
   const items = [];
@@ -139,12 +170,15 @@ function parseCodexUsage(text) {
     }
 
     const remainingPercent = parsePercent(line);
-    const resetText = findNearby(lines, remainingOnNextLine ? index + 1 : index, looksLikeReset, 2);
+    const resetText = normalizeResetText(
+      findNearby(lines, remainingOnNextLine ? index + 1 : index, looksLikeReset, 2),
+    );
     seenTitles.add(title);
+    const label = normalizeCodexLabel(title);
 
     items.push({
-      id: title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""),
-      label: title,
+      id: label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""),
+      label,
       remainingPercent,
       usedPercent: remainingPercent === null ? null : Math.max(0, 100 - remainingPercent),
       resetText,
@@ -161,7 +195,9 @@ function parseCodexUsage(text) {
 
 function getPrimaryMetric(items, preferredIds) {
   for (const id of preferredIds) {
-    const match = items.find((item) => item.id === id);
+    const match = items.find(
+      (item) => item.id === id || item.id.includes(id) || (item.label && item.label.includes(id)),
+    );
     if (match && typeof match.remainingPercent === "number") {
       return match.remainingPercent;
     }
@@ -170,18 +206,26 @@ function getPrimaryMetric(items, preferredIds) {
   return fallback ? fallback.remainingPercent : null;
 }
 
-function formatTrayTitle(state) {
-  const claude = state.providers.claude;
-  const codex = state.providers.codex;
+function getProviderDisplayMetric(providerState, preferredIds) {
+  if (!providerState || providerState.status === "idle") {
+    return null;
+  }
+
+  return getPrimaryMetric(providerState.items || [], preferredIds);
+}
+
+function formatTrayTitle(state, mode = "weekly") {
+  const claude = state.providers.claude || {};
+  const codex = state.providers.codex || {};
 
   const claudeRemaining =
-    claude.status === "ok"
-      ? getPrimaryMetric(claude.items, ["current-session", "weekly-all-models"])
-      : null;
+    mode === "session"
+      ? getProviderDisplayMetric(claude, ["current-session", "weekly-all-models"])
+      : getProviderDisplayMetric(claude, ["weekly-all-models", "current-session"]);
   const codexRemaining =
-    codex.status === "ok"
-      ? getPrimaryMetric(codex.items, ["5h", "5-hours", "5", "5hour", "5-hours-of-usage-limit"])
-      : null;
+    mode === "session"
+      ? getProviderDisplayMetric(codex, ["5時間", "5h", "5-hour", "5 hour"])
+      : getProviderDisplayMetric(codex, ["週あたり", "weekly", "5時間", "5h", "5-hour", "5 hour"]);
 
   const parts = [];
   parts.push(`C ${claudeRemaining === null ? "--" : `${claudeRemaining}%`}`);
@@ -189,10 +233,36 @@ function formatTrayTitle(state) {
   return parts.join("  ");
 }
 
+function mergeProviderState(previousState, nextState) {
+  const normalizedNext = {
+    ...nextState,
+    items: Array.isArray(nextState?.items) ? nextState.items : [],
+  };
+  const previousItems = Array.isArray(previousState?.items) ? previousState.items : [];
+
+  if (
+    normalizedNext.items.length === 0
+    && previousItems.length > 0
+    && ["loading", "error", "needs-auth"].includes(normalizedNext.status)
+  ) {
+    return {
+      ...normalizedNext,
+      items: previousItems,
+      stale: true,
+    };
+  }
+
+  return {
+    ...normalizedNext,
+    stale: false,
+  };
+}
+
 module.exports = {
   formatTrayTitle,
   isExpectedUsageLocation,
   looksLikeAuthPage,
+  mergeProviderState,
   parseClaudeUsage,
   parseCodexUsage,
 };

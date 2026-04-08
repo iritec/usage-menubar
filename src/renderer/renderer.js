@@ -58,7 +58,10 @@ function renderProvider(providerId, provider) {
   fragment.querySelector(".provider-name").textContent =
     providerId === "claude" ? "Claude" : "Codex";
   fragment.querySelector(".provider-status").textContent = formatStatus(provider.status);
-  fragment.querySelector(".provider-message").textContent = provider.message || "";
+  const providerMessage = provider.stale && provider.items.length
+    ? `${provider.message || ""} Showing last successful snapshot.`.trim()
+    : (provider.message || "");
+  fragment.querySelector(".provider-message").textContent = providerMessage;
 
   const itemList = fragment.querySelector(".item-list");
   if (provider.items.length) {
@@ -88,7 +91,7 @@ function renderProvider(providerId, provider) {
   }
 
   const loginButton = fragment.querySelector(".login-button");
-  if (provider.status === "needs-auth" || provider.status === "error") {
+  if (provider.status === "needs-auth") {
     loginButton.textContent = "Login in Chrome";
     loginButton.addEventListener("click", () => {
       window.usageMonitor.openLogin(providerId);

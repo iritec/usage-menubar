@@ -13,6 +13,14 @@ const {
   shell,
   session,
 } = require("electron");
+const {
+  formatTrayTitle,
+  isExpectedUsageLocation,
+  looksLikeAuthPage,
+  mergeProviderState,
+  parseClaudeUsage,
+  parseCodexUsage,
+} = require("./parsers");
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const isDev = !app.isPackaged;
 const customUserDataDir = process.env.USAGE_MONITOR_USER_DATA_DIR;
@@ -56,243 +64,9 @@ function setTrayMode(mode) {
   saveSettings(settings);
 }
 
-const CLAUDE_LABELS = [
-  {
-    id: "current-session",
-    match: /^(現在のセッション|current session)$/i,
-    label: "Current session",
-  },
-  {
-    id: "weekly-all-models",
-    match: /^(すべてのモデル|all models)$/i,
-    label: "All models",
-  },
-  {
-    id: "weekly-sonnet",
-    match: /sonnet/i,
-    label: "Sonnet only",
-  },
-];
-
-const CODEX_IGNORED_TITLES = [
-  /^(使用状況ダッシュボード|usage dashboard)$/i,
-  /^(残高|balance)$/i,
-  /^(リセット|reset)/i,
-  /^(クレジット|credits)/i,
-];
-
-function normalizeLines(text) {
-  return text
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean);
-}
-
-function parsePercent(line) {
-  const match = line.match(/(\d{1,3})\s*%/);
-  return match ? Number(match[1]) : null;
-}
-
-function looksLikeReset(line) {
-  return /(リセット|reset)/i.test(line);
-}
-
-function looksLikeAuthPage(text, url) {
-  const authUrl = /(login|signin|sign-in|auth|oauth|accounts\.google|clerk\.|sso)/i.test(url || "");
-  const authText =
-    /(log in|sign in|sign up|continue with google|continue with github|continue with email|welcome back|create.*account|メールアドレス|メールで続行|ログイン|サインイン|page not found|ページが見つかりません)/i.test(
-      text || "",
-    );
-  return authUrl || authText;
-}
-
 function getEnvValue(name) {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : null;
-}
-
-function isExpectedUsageLocation(currentUrl, expectedUrl) {
-  try {
-    const current = new URL(currentUrl);
-    const expected = new URL(expectedUrl);
-    return current.origin === expected.origin && current.pathname.startsWith(expected.pathname);
-  } catch {
-    return false;
-  }
-}
-
-function findNearby(lines, startIndex, predicate, distance = 4) {
-  for (let offset = 1; offset <= distance; offset += 1) {
-    const line = lines[startIndex + offset];
-    if (!line) {
-      break;
-    }
-    if (predicate(line)) {
-      return line;
-    }
-  }
-  return null;
-}
-
-function parseClaudeUsage(text) {
-  const lines = normalizeLines(text);
-  const items = [];
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const labelConfig = CLAUDE_LABELS.find((entry) => entry.match.test(lines[index]));
-    if (!labelConfig) {
-      continue;
-    }
-
-    const resetLine = findNearby(lines, index, looksLikeReset, 4);
-    const percentLine = findNearby(lines, index, (line) => parsePercent(line) !== null, 5);
-    const usedPercent = percentLine ? parsePercent(percentLine) : null;
-
-    items.push({
-      id: labelConfig.id,
-      label: labelConfig.label,
-      usedPercent,
-      remainingPercent: usedPercent === null ? null : Math.max(0, 100 - usedPercent),
-      resetText: resetLine,
-      detail: percentLine || null,
-    });
-  }
-
-  if (!items.length) {
-    throw new Error("Claude usage blocks were not found");
-  }
-
-  return items;
-}
-
-function findCodexTitle(lines, percentIndex) {
-  for (let index = percentIndex - 1; index >= Math.max(0, percentIndex - 3); index -= 1) {
-    const line = lines[index];
-    if (!line || parsePercent(line) !== null || looksLikeReset(line)) {
-      continue;
-    }
-    if (CODEX_IGNORED_TITLES.some((pattern) => pattern.test(line))) {
-      continue;
-    }
-    return line;
-  }
-  return null;
-}
-
-const CODEX_LABEL_MAP = [
-  { match: /5時間の使用制限|5.?hour/i, label: "5-hour limit" },
-  { match: /週あたりの使用制限|weekly/i, label: "Weekly limit" },
-];
-
-function normalizeCodexLabel(raw) {
-  for (const entry of CODEX_LABEL_MAP) {
-    if (entry.match.test(raw)) {
-      return entry.label;
-    }
-  }
-  // For model-specific labels like "GPT-5.3-Codex-Spark 5時間の使用制限"
-  const modelMatch = raw.match(/^([\w.-]+)\s+/);
-  if (modelMatch) {
-    const rest = raw.slice(modelMatch[0].length);
-    for (const entry of CODEX_LABEL_MAP) {
-      if (entry.match.test(rest)) {
-        return `${modelMatch[1]} ${entry.label}`;
-      }
-    }
-  }
-  return raw;
-}
-
-function normalizeResetText(text) {
-  if (!text) return null;
-  // "リセット：15:31" → "Resets: 15:31"
-  // "リセット：2026/03/19 4:55" → "Resets: 2026/03/19 4:55"
-  return text.replace(/^リセット\s*[：:]\s*/i, "Resets: ");
-}
-
-function parseCodexUsage(text) {
-  const lines = normalizeLines(text);
-  const items = [];
-  const seenTitles = new Set();
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (parsePercent(line) === null) {
-      continue;
-    }
-    // "残り"/"remaining" can be on the same line or the next line
-    const remainingOnSameLine = /(残り|remaining)/i.test(line);
-    const remainingOnNextLine =
-      !remainingOnSameLine && index + 1 < lines.length && /^(残り|remaining)$/i.test(lines[index + 1]);
-    if (!remainingOnSameLine && !remainingOnNextLine) {
-      continue;
-    }
-
-    const title = findCodexTitle(lines, index);
-    if (!title || seenTitles.has(title)) {
-      continue;
-    }
-
-    const remainingPercent = parsePercent(line);
-    const resetText = normalizeResetText(
-      findNearby(lines, remainingOnNextLine ? index + 1 : index, looksLikeReset, 2),
-    );
-    seenTitles.add(title);
-
-    const label = normalizeCodexLabel(title);
-    items.push({
-      id: label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, ""),
-      label,
-      remainingPercent,
-      usedPercent: remainingPercent === null ? null : Math.max(0, 100 - remainingPercent),
-      resetText,
-      detail: line,
-    });
-  }
-
-  if (!items.length) {
-    throw new Error("Codex usage cards were not found");
-  }
-
-  return items;
-}
-
-function getPrimaryMetric(items, preferredIds) {
-  for (const id of preferredIds) {
-    const match = items.find(
-      (item) => item.id === id || item.id.includes(id) || (item.label && item.label.includes(id)),
-    );
-    if (match && typeof match.remainingPercent === "number") {
-      return match.remainingPercent;
-    }
-  }
-  const fallback = items.find((item) => typeof item.remainingPercent === "number");
-  return fallback ? fallback.remainingPercent : null;
-}
-
-function formatTrayTitle(currentState) {
-  const claude = currentState.providers.claude;
-  const codex = currentState.providers.codex;
-  const mode = getTrayMode();
-
-  const claudePreferred =
-    mode === "session"
-      ? ["current-session", "weekly-all-models"]
-      : ["weekly-all-models", "current-session"];
-  const codexPreferred =
-    mode === "session"
-      ? ["5時間", "5h", "5-hour", "5 hour"]
-      : ["週あたり", "weekly", "5時間", "5h", "5-hour", "5 hour"];
-
-  const claudeRemaining =
-    claude.status === "ok" ? getPrimaryMetric(claude.items, claudePreferred) : null;
-  const codexRemaining =
-    codex.status === "ok" ? getPrimaryMetric(codex.items, codexPreferred) : null;
-
-  const parts = [];
-  parts.push(`C ${claudeRemaining === null ? "--" : `${claudeRemaining}%`}`);
-  parts.push(`O ${codexRemaining === null ? "--" : `${codexRemaining}%`}`);
-  return parts.join("  ");
 }
 
 function getChromeProfileDirs() {
@@ -578,7 +352,13 @@ async function collectClaudeUsageViaApi(provider) {
 }
 
 const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
-const HIDDEN_SCRAPE_DELAY_MS = 3500;
+const HIDDEN_PAGE_LOAD_TIMEOUT_MS = 15 * 1000;
+const HIDDEN_SCRAPE_TIMEOUT_MS = 10 * 1000;
+const HIDDEN_SCRAPE_POLL_MS = 500;
+const HIDDEN_WINDOW_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
+const DEFAULT_CODEX_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/usage";
+const LEGACY_CODEX_USAGE_URL = "https://chatgpt.com/codex/settings/usage";
 
 const PROVIDERS = {
   claude: {
@@ -592,7 +372,8 @@ const PROVIDERS = {
   codex: {
     id: "codex",
     label: "Codex",
-    url: getEnvValue("USAGE_MONITOR_CODEX_URL") || "https://chatgpt.com/codex/settings/usage",
+    url: getEnvValue("USAGE_MONITOR_CODEX_URL") || DEFAULT_CODEX_USAGE_URL,
+    acceptedUrls: [DEFAULT_CODEX_USAGE_URL, LEGACY_CODEX_USAGE_URL],
     partition: "persist:usage-codex",
     chromeDomains: ["chatgpt.com", "openai.com"],
     waitForTexts: ["使用状況ダッシュボード", "Usage dashboard", "残高", "Balance"],
@@ -655,7 +436,7 @@ function updateTrayTitle() {
   if (!tray) {
     return;
   }
-  tray.setTitle(formatTrayTitle(state));
+  tray.setTitle(formatTrayTitle(state, getTrayMode()));
   tray.setToolTip("Claude / Codex usage");
 }
 
@@ -748,6 +529,128 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function createProviderResult(status, provider, message, extras = {}) {
+  return {
+    status,
+    items: [],
+    message,
+    ...extras,
+  };
+}
+
+function createTaggedError(code, message, extras = {}) {
+  const error = new Error(message);
+  error.code = code;
+  Object.assign(error, extras);
+  return error;
+}
+
+function withTimeout(taskFactory, timeoutMs, createTimeoutError) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(createTimeoutError());
+    }, timeoutMs);
+
+    Promise.resolve()
+      .then(taskFactory)
+      .then(
+        (value) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+  });
+}
+
+async function capturePageSnapshot(hiddenWindow) {
+  return hiddenWindow.webContents.executeJavaScript(`
+    ({
+      url: window.location.href,
+      title: document.title,
+      text: document.body ? document.body.innerText : ""
+    })
+  `);
+}
+
+function snapshotHasUsageContent(provider, snapshot) {
+  if (!snapshot || !snapshot.text) {
+    return false;
+  }
+
+  const waitForTexts = provider.waitForTexts || [];
+  if (waitForTexts.length > 0 && !waitForTexts.some((text) => snapshot.text.includes(text))) {
+    return false;
+  }
+
+  try {
+    provider.parser(snapshot.text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForUsageSnapshot(hiddenWindow, provider) {
+  let lastSnapshot = null;
+
+  return withTimeout(
+    async () => {
+      while (true) {
+        lastSnapshot = await capturePageSnapshot(hiddenWindow);
+
+        if (
+          looksLikeAuthPage(lastSnapshot.text, lastSnapshot.url)
+          || snapshotHasUsageContent(provider, lastSnapshot)
+        ) {
+          return lastSnapshot;
+        }
+
+        await delay(HIDDEN_SCRAPE_POLL_MS);
+      }
+    },
+    HIDDEN_SCRAPE_TIMEOUT_MS,
+    () =>
+      createTaggedError("timeout", `${provider.label} usage data timed out`, {
+        pageUrl: lastSnapshot?.url || hiddenWindow.webContents.getURL() || provider.url,
+        snapshot: lastSnapshot,
+      }),
+  );
+}
+
+function logProviderIssue(providerId, providerState) {
+  if (providerState.status !== "error") {
+    return;
+  }
+
+  console.warn(`[${providerId}] ${providerState.message}`, {
+    errorCode: providerState.errorCode || null,
+    pageUrl: providerState.pageUrl || null,
+    diagnostic: providerState.diagnostic || null,
+  });
+}
+
+function isExpectedProviderLocation(provider, currentUrl) {
+  const expectedUrls = [provider.url, ...(provider.acceptedUrls || [])];
+  return expectedUrls.some((expectedUrl) => isExpectedUsageLocation(currentUrl, expectedUrl));
+}
+
 async function collectUsage(provider) {
   const authSession = session.fromPartition(provider.partition);
   let hiddenWindow = null;
@@ -761,54 +664,94 @@ async function collectUsage(provider) {
     });
 
     try {
-      await hiddenWindow.loadURL(provider.url, {
-        userAgent:
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-      });
+      await withTimeout(
+        () =>
+          hiddenWindow.loadURL(provider.url, {
+            userAgent: HIDDEN_WINDOW_USER_AGENT,
+          }),
+        HIDDEN_PAGE_LOAD_TIMEOUT_MS,
+        () =>
+          createTaggedError("timeout", `${provider.label} usage page load timed out`, {
+            pageUrl: hiddenWindow.webContents.getURL() || provider.url,
+          }),
+      );
     } catch (error) {
-      const redirectedUrl = hiddenWindow.webContents.getURL();
-      if (
-        /ERR_ABORTED/i.test(error.message || "") ||
-        !isExpectedUsageLocation(redirectedUrl, provider.url) ||
-        looksLikeAuthPage("", redirectedUrl)
-      ) {
-        return {
-          status: "needs-auth",
-          items: [],
-          message: `${provider.label} needs login`,
+      const redirectedUrl = hiddenWindow.webContents.getURL() || provider.url;
+      if (/ERR_ABORTED/i.test(error.message || "") || looksLikeAuthPage("", redirectedUrl)) {
+        return createProviderResult("needs-auth", provider, `${provider.label} needs login`, {
           pageUrl: redirectedUrl,
-        };
+          errorCode: "needs-auth",
+        });
       }
-      throw error;
+
+      if (!isExpectedProviderLocation(provider, redirectedUrl)) {
+        return createProviderResult("error", provider, `${provider.label} redirected away from usage page`, {
+          pageUrl: redirectedUrl,
+          errorCode: "redirect",
+          diagnostic: error.message || null,
+        });
+      }
+
+      if (error.code === "timeout") {
+        return createProviderResult("error", provider, error.message, {
+          pageUrl: redirectedUrl,
+          errorCode: error.code,
+        });
+      }
+
+      return createProviderResult("error", provider, `${provider.label} page load failed`, {
+        pageUrl: redirectedUrl,
+        errorCode: "load-failed",
+        diagnostic: error.message || null,
+      });
     }
 
-    await delay(HIDDEN_SCRAPE_DELAY_MS);
+    let snapshot = null;
+    try {
+      snapshot = await waitForUsageSnapshot(hiddenWindow, provider);
+    } catch (error) {
+      const finalSnapshot = error.snapshot || await capturePageSnapshot(hiddenWindow).catch(() => null);
 
-    const snapshot = await hiddenWindow.webContents.executeJavaScript(`
-      ({
-        url: window.location.href,
-        title: document.title,
-        text: document.body ? document.body.innerText : ""
-      })
-    `);
+      if (finalSnapshot && looksLikeAuthPage(finalSnapshot.text, finalSnapshot.url)) {
+        return createProviderResult("needs-auth", provider, `${provider.label} needs login`, {
+          pageUrl: finalSnapshot.url,
+          errorCode: "needs-auth",
+        });
+      }
 
+      if (finalSnapshot && !isExpectedProviderLocation(provider, finalSnapshot.url)) {
+        return createProviderResult("error", provider, `${provider.label} redirected away from usage page`, {
+          pageUrl: finalSnapshot.url,
+          errorCode: "redirect",
+          diagnostic: {
+            title: finalSnapshot.title || "",
+            preview: (finalSnapshot.text || "").replace(/\n/g, " ").substring(0, 120),
+          },
+        });
+      }
+
+      return createProviderResult("error", provider, error.message || `${provider.label} usage data timed out`, {
+        pageUrl:
+          finalSnapshot?.url
+          || error.pageUrl
+          || hiddenWindow.webContents.getURL()
+          || provider.url,
+        errorCode: error.code || "timeout",
+      });
+    }
 
     if (looksLikeAuthPage(snapshot.text, snapshot.url)) {
-      return {
-        status: "needs-auth",
-        items: [],
-        message: `${provider.label} needs login`,
+      return createProviderResult("needs-auth", provider, `${provider.label} needs login`, {
         pageUrl: snapshot.url,
-      };
+        errorCode: "needs-auth",
+      });
     }
 
-    if (!isExpectedUsageLocation(snapshot.url, provider.url)) {
-      return {
-        status: "needs-auth",
-        items: [],
-        message: `${provider.label} redirected to ${snapshot.url}`,
+    if (!isExpectedProviderLocation(provider, snapshot.url)) {
+      return createProviderResult("error", provider, `${provider.label} redirected away from usage page`, {
         pageUrl: snapshot.url,
-      };
+        errorCode: "redirect",
+      });
     }
 
     try {
@@ -821,12 +764,15 @@ async function collectUsage(provider) {
       };
     } catch (parseError) {
       const preview = (snapshot.text || "").replace(/\n/g, " ").substring(0, 120);
-      return {
-        status: "error",
-        items: [],
-        message: `${parseError.message} (url: ${snapshot.url}, text: ${preview}...)`,
+      return createProviderResult("error", provider, `${provider.label} usage data could not be parsed`, {
         pageUrl: snapshot.url,
-      };
+        errorCode: "parse-failed",
+        diagnostic: {
+          parserMessage: parseError.message,
+          preview,
+          title: snapshot.title || "",
+        },
+      });
     }
   } finally {
     if (hiddenWindow && !hiddenWindow.isDestroyed()) {
@@ -842,12 +788,14 @@ async function refreshProvider(providerId, isManual = false) {
     return;
   }
 
-  setProviderState(providerId, {
+  const previousState = state.providers[providerId];
+
+  setProviderState(providerId, mergeProviderState(previousState, {
     status: "loading",
-    chromeConnected: state.providers[providerId].chromeConnected,
-    items: state.providers[providerId].items,
+    chromeConnected: previousState.chromeConnected,
+    items: previousState.items,
     message: isManual ? "Refreshing..." : "Auto refreshing...",
-  });
+  }));
 
   try {
     // Always import Chrome cookies first to ensure session is fresh
@@ -863,26 +811,35 @@ async function refreshProvider(providerId, isManual = false) {
       result = await collectUsage(provider);
     }
 
-    // If still not ok, prompt user
-    if (!result || (result.status !== "ok" && result.status !== "needs-auth")) {
-      result = {
-        status: "needs-auth",
-        items: [],
-        message: `Log in to ${provider.label} in Chrome, then refresh`,
-      };
+    if (!result) {
+      result =
+        providerId === "claude"
+        ? {
+            status: "needs-auth",
+            items: [],
+            message: `Log in to ${provider.label} in Chrome, then refresh`,
+          }
+        : createProviderResult("error", provider, `${provider.label} refresh returned no data`, {
+            errorCode: "empty-result",
+          });
     }
 
-    setProviderState(providerId, {
+    const nextState = mergeProviderState(previousState, {
       ...result,
       lastUpdatedAt: new Date().toISOString(),
     });
+    setProviderState(providerId, nextState);
+    logProviderIssue(providerId, nextState);
   } catch (error) {
-    setProviderState(providerId, {
+    const nextState = mergeProviderState(previousState, {
       status: "error",
       items: [],
       message: error.message || `${provider.label} refresh failed`,
+      errorCode: error.code || "refresh-failed",
       lastUpdatedAt: new Date().toISOString(),
     });
+    setProviderState(providerId, nextState);
+    logProviderIssue(providerId, nextState);
   }
 }
 

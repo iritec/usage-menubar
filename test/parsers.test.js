@@ -4,6 +4,7 @@ const {
   formatTrayTitle,
   isExpectedUsageLocation,
   looksLikeAuthPage,
+  mergeProviderState,
   parseClaudeUsage,
   parseCodexUsage,
 } = require("../src/parsers");
@@ -52,9 +53,10 @@ test("parseCodexUsage extracts remaining percentages from cards (multi-line form
   `);
 
   assert.equal(items.length, 5);
-  assert.equal(items[0].label, "5時間の使用制限");
+  assert.equal(items[0].label, "5-hour limit");
   assert.equal(items[0].remainingPercent, 92);
   assert.equal(items[1].remainingPercent, 61);
+  assert.equal(items[0].resetText, "Resets: 17:16");
 });
 
 test("parseCodexUsage still works with single-line format", () => {
@@ -70,7 +72,7 @@ test("parseCodexUsage still works with single-line format", () => {
   `);
 
   assert.equal(items.length, 2);
-  assert.equal(items[0].label, "5時間の使用制限");
+  assert.equal(items[0].label, "5-hour limit");
   assert.equal(items[0].remainingPercent, 97);
   assert.equal(items[1].remainingPercent, 62);
 });
@@ -78,6 +80,13 @@ test("parseCodexUsage still works with single-line format", () => {
 test("looksLikeAuthPage detects login redirects", () => {
   assert.equal(looksLikeAuthPage("Log in to continue", "https://chatgpt.com/auth/login"), true);
   assert.equal(looksLikeAuthPage("使用状況ダッシュボード", "https://chatgpt.com/codex/settings/usage"), false);
+  assert.equal(
+    looksLikeAuthPage(
+      "ChatGPT Log in to get answers based on saved chats, plus create images and upload files.",
+      "https://chatgpt.com/",
+    ),
+    true,
+  );
 });
 
 test("isExpectedUsageLocation distinguishes redirected pages", () => {
@@ -103,7 +112,60 @@ test("formatTrayTitle prefers primary metrics", () => {
         items: [{ id: "5-hours-of-usage-limit", remainingPercent: 97 }],
       },
     },
-  });
+  }, "session");
 
   assert.equal(title, "C 94%  O 97%");
+});
+
+test("formatTrayTitle keeps stale values while provider is loading", () => {
+  const title = formatTrayTitle({
+    providers: {
+      claude: {
+        status: "ok",
+        items: [{ id: "weekly-all-models", remainingPercent: 88 }],
+      },
+      codex: {
+        status: "loading",
+        items: [{ id: "weekly-limit", remainingPercent: 56 }],
+      },
+    },
+  }, "weekly");
+
+  assert.equal(title, "C 88%  O 56%");
+});
+
+test("mergeProviderState preserves previous items for loading and failures", () => {
+  const previousState = {
+    status: "ok",
+    items: [{ id: "5-hour-limit", remainingPercent: 85 }],
+    message: "Codex updated",
+  };
+
+  assert.deepEqual(
+    mergeProviderState(previousState, {
+      status: "loading",
+      items: [],
+      message: "Refreshing...",
+    }),
+    {
+      status: "loading",
+      items: [{ id: "5-hour-limit", remainingPercent: 85 }],
+      message: "Refreshing...",
+      stale: true,
+    },
+  );
+
+  assert.deepEqual(
+    mergeProviderState(previousState, {
+      status: "error",
+      items: [],
+      message: "Codex usage data timed out",
+    }),
+    {
+      status: "error",
+      items: [{ id: "5-hour-limit", remainingPercent: 85 }],
+      message: "Codex usage data timed out",
+      stale: true,
+    },
+  );
 });

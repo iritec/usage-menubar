@@ -117,6 +117,23 @@ test("formatTrayTitle prefers primary metrics", () => {
   assert.equal(title, "C 94%  O 97%");
 });
 
+test("formatTrayTitle shows weekly reset dates in weekly mode", () => {
+  const title = formatTrayTitle({
+    providers: {
+      claude: {
+        status: "ok",
+        items: [{ id: "weekly-all-models", remainingPercent: 88, resetText: "Resets: 4/9 16:00" }],
+      },
+      codex: {
+        status: "ok",
+        items: [{ id: "weekly-limit", remainingPercent: 56, resetText: "Resets: 2026/4/15 8:24" }],
+      },
+    },
+  }, "weekly");
+
+  assert.equal(title, "C 88%(4/9)  O 56%(4/15)");
+});
+
 test("formatTrayTitle keeps stale values while provider is loading", () => {
   const title = formatTrayTitle({
     providers: {

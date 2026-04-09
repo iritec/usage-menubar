@@ -193,43 +193,57 @@ function parseCodexUsage(text) {
   return items;
 }
 
-function getPrimaryMetric(items, preferredIds) {
+function getPrimaryItem(items, preferredIds) {
   for (const id of preferredIds) {
     const match = items.find(
       (item) => item.id === id || item.id.includes(id) || (item.label && item.label.includes(id)),
     );
     if (match && typeof match.remainingPercent === "number") {
-      return match.remainingPercent;
+      return match;
     }
   }
-  const fallback = items.find((item) => typeof item.remainingPercent === "number");
-  return fallback ? fallback.remainingPercent : null;
+  return items.find((item) => typeof item.remainingPercent === "number") || null;
 }
 
-function getProviderDisplayMetric(providerState, preferredIds) {
+function getProviderDisplayItem(providerState, preferredIds) {
   if (!providerState || providerState.status === "idle") {
     return null;
   }
 
-  return getPrimaryMetric(providerState.items || [], preferredIds);
+  return getPrimaryItem(providerState.items || [], preferredIds);
+}
+
+function formatTrayResetDate(resetText) {
+  if (!resetText) {
+    return "";
+  }
+
+  const match = resetText.match(/(?:\b\d{4}\/)?(\d{1,2})\/(\d{1,2})\b/);
+  if (!match) {
+    return "";
+  }
+
+  return `(${Number(match[1])}/${Number(match[2])})`;
 }
 
 function formatTrayTitle(state, mode = "weekly") {
   const claude = state.providers.claude || {};
   const codex = state.providers.codex || {};
 
-  const claudeRemaining =
+  const claudeItem =
     mode === "session"
-      ? getProviderDisplayMetric(claude, ["current-session", "weekly-all-models"])
-      : getProviderDisplayMetric(claude, ["weekly-all-models", "current-session"]);
-  const codexRemaining =
+      ? getProviderDisplayItem(claude, ["current-session", "weekly-all-models"])
+      : getProviderDisplayItem(claude, ["weekly-all-models", "current-session"]);
+  const codexItem =
     mode === "session"
-      ? getProviderDisplayMetric(codex, ["5時間", "5h", "5-hour", "5 hour"])
-      : getProviderDisplayMetric(codex, ["週あたり", "weekly", "5時間", "5h", "5-hour", "5 hour"]);
+      ? getProviderDisplayItem(codex, ["5時間", "5h", "5-hour", "5 hour"])
+      : getProviderDisplayItem(codex, ["週あたり", "weekly", "5時間", "5h", "5-hour", "5 hour"]);
+  const claudeReset = mode === "weekly" ? formatTrayResetDate(claudeItem?.resetText) : "";
+  const codexReset = mode === "weekly" ? formatTrayResetDate(codexItem?.resetText) : "";
 
   const parts = [];
-  parts.push(`C ${claudeRemaining === null ? "--" : `${claudeRemaining}%`}`);
-  parts.push(`O ${codexRemaining === null ? "--" : `${codexRemaining}%`}`);
+  parts.push(`C ${claudeItem ? `${claudeItem.remainingPercent}%${claudeReset}` : "--"}`);
+  parts.push(`O ${codexItem ? `${codexItem.remainingPercent}%${codexReset}` : "--"}`);
   return parts.join("  ");
 }
 

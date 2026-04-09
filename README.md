@@ -1,6 +1,6 @@
 # Usage Menubar
 
-<img width="1238" height="607" alt="image" src="https://github.com/user-attachments/assets/fd71ac9c-0304-4913-b0e0-3d2ee20307a3" />
+<img width="1111" height="545" alt="image" src="https://github.com/user-attachments/assets/2965d617-61f1-4b87-b35b-710fdd3a54e5" />
 
 A macOS menubar app that tracks your [Claude](https://claude.ai) and [Codex](https://chatgpt.com/codex) usage in real time. See remaining quotas at a glance without leaving your editor.
 

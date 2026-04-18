@@ -48,6 +48,15 @@ function looksLikeAuthPage(text, url) {
   return authUrl || authText;
 }
 
+function looksLikeChallengePage(text, url) {
+  const challengeUrl = /(__cf_chl_|cdn-cgi\/challenge-platform|challenges\.cloudflare\.com)/i.test(url || "");
+  const challengeText =
+    /(enable javascript and cookies to continue|checking your browser|verify you are human|cloudflare|検証中|私はロボットではありません)/i.test(
+      text || "",
+    );
+  return challengeUrl || challengeText;
+}
+
 function isExpectedUsageLocation(currentUrl, expectedUrl) {
   try {
     const current = new URL(currentUrl);
@@ -122,12 +131,6 @@ const CODEX_LABEL_MAP = [
 ];
 
 function normalizeCodexLabel(raw) {
-  for (const entry of CODEX_LABEL_MAP) {
-    if (entry.match.test(raw)) {
-      return entry.label;
-    }
-  }
-
   const modelMatch = raw.match(/^([\w.-]+)\s+/);
   if (modelMatch) {
     const rest = raw.slice(modelMatch[0].length);
@@ -135,6 +138,12 @@ function normalizeCodexLabel(raw) {
       if (entry.match.test(rest)) {
         return `${modelMatch[1]} ${entry.label}`;
       }
+    }
+  }
+
+  for (const entry of CODEX_LABEL_MAP) {
+    if (entry.match.test(raw)) {
+      return entry.label;
     }
   }
 
@@ -276,7 +285,9 @@ module.exports = {
   formatTrayTitle,
   isExpectedUsageLocation,
   looksLikeAuthPage,
+  looksLikeChallengePage,
   mergeProviderState,
+  normalizeCodexLabel,
   parseClaudeUsage,
   parseCodexUsage,
 };

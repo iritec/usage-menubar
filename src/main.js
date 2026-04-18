@@ -17,6 +17,7 @@ const {
   formatTrayTitle,
   isExpectedUsageLocation,
   looksLikeAuthPage,
+  looksLikeChallengePage,
   mergeProviderState,
   parseClaudeUsage,
   parseCodexUsage,
@@ -352,12 +353,13 @@ async function collectClaudeUsageViaApi(provider) {
 }
 
 const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
-const HIDDEN_PAGE_LOAD_TIMEOUT_MS = 15 * 1000;
-const HIDDEN_SCRAPE_TIMEOUT_MS = 10 * 1000;
+const DEFAULT_HIDDEN_PAGE_LOAD_TIMEOUT_MS = 15 * 1000;
+const DEFAULT_HIDDEN_SCRAPE_TIMEOUT_MS = 10 * 1000;
 const HIDDEN_SCRAPE_POLL_MS = 500;
 const HIDDEN_WINDOW_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
-const DEFAULT_CODEX_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/usage";
+const DEFAULT_CODEX_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage";
+const LEGACY_CODEX_CLOUD_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/usage";
 const LEGACY_CODEX_USAGE_URL = "https://chatgpt.com/codex/settings/usage";
 
 const PROVIDERS = {
@@ -373,9 +375,12 @@ const PROVIDERS = {
     id: "codex",
     label: "Codex",
     url: getEnvValue("USAGE_MONITOR_CODEX_URL") || DEFAULT_CODEX_USAGE_URL,
-    acceptedUrls: [DEFAULT_CODEX_USAGE_URL, LEGACY_CODEX_USAGE_URL],
+    acceptedUrls: [DEFAULT_CODEX_USAGE_URL, LEGACY_CODEX_CLOUD_USAGE_URL, LEGACY_CODEX_USAGE_URL],
     partition: "persist:usage-codex",
     chromeDomains: ["chatgpt.com", "openai.com"],
+    pageLoadTimeoutMs: 30 * 1000,
+    scrapeTimeoutMs: 45 * 1000,
+    resetStorageBeforeRefresh: true,
     waitForTexts: ["使用状況ダッシュボード", "Usage dashboard", "残高", "Balance"],
     parser: parseCodexUsage,
   },
@@ -589,6 +594,20 @@ async function capturePageSnapshot(hiddenWindow) {
   `);
 }
 
+async function clearProviderStorage(provider) {
+  const targetSession = session.fromPartition(provider.partition);
+  try {
+    await targetSession.clearStorageData({
+      storages: ["appcache", "cachestorage", "indexdb", "localstorage", "serviceworkers", "websql"],
+      quotas: ["temporary", "syncable"],
+    });
+  } catch {}
+
+  try {
+    await targetSession.clearCache();
+  } catch {}
+}
+
 function snapshotHasUsageContent(provider, snapshot) {
   if (!snapshot || !snapshot.text) {
     return false;
@@ -625,7 +644,7 @@ async function waitForUsageSnapshot(hiddenWindow, provider) {
         await delay(HIDDEN_SCRAPE_POLL_MS);
       }
     },
-    HIDDEN_SCRAPE_TIMEOUT_MS,
+    provider.scrapeTimeoutMs || DEFAULT_HIDDEN_SCRAPE_TIMEOUT_MS,
     () =>
       createTaggedError("timeout", `${provider.label} usage data timed out`, {
         pageUrl: lastSnapshot?.url || hiddenWindow.webContents.getURL() || provider.url,
@@ -669,7 +688,7 @@ async function collectUsage(provider) {
           hiddenWindow.loadURL(provider.url, {
             userAgent: HIDDEN_WINDOW_USER_AGENT,
           }),
-        HIDDEN_PAGE_LOAD_TIMEOUT_MS,
+        provider.pageLoadTimeoutMs || DEFAULT_HIDDEN_PAGE_LOAD_TIMEOUT_MS,
         () =>
           createTaggedError("timeout", `${provider.label} usage page load timed out`, {
             pageUrl: hiddenWindow.webContents.getURL() || provider.url,
@@ -716,6 +735,17 @@ async function collectUsage(provider) {
         return createProviderResult("needs-auth", provider, `${provider.label} needs login`, {
           pageUrl: finalSnapshot.url,
           errorCode: "needs-auth",
+        });
+      }
+
+      if (finalSnapshot && looksLikeChallengePage(finalSnapshot.text, finalSnapshot.url)) {
+        return createProviderResult("error", provider, `${provider.label} blocked by Cloudflare challenge`, {
+          pageUrl: finalSnapshot.url,
+          errorCode: "challenge",
+          diagnostic: {
+            title: finalSnapshot.title || "",
+            preview: (finalSnapshot.text || "").replace(/\n/g, " ").substring(0, 120),
+          },
         });
       }
 
@@ -798,6 +828,10 @@ async function refreshProvider(providerId, isManual = false) {
   }));
 
   try {
+    if (provider.resetStorageBeforeRefresh) {
+      await clearProviderStorage(provider);
+    }
+
     // Always import Chrome cookies first to ensure session is fresh
     await importChromeCookies(provider);
 

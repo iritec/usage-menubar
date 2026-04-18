@@ -4,7 +4,9 @@ const {
   formatTrayTitle,
   isExpectedUsageLocation,
   looksLikeAuthPage,
+  looksLikeChallengePage,
   mergeProviderState,
+  normalizeCodexLabel,
   parseClaudeUsage,
   parseCodexUsage,
 } = require("../src/parsers");
@@ -77,6 +79,18 @@ test("parseCodexUsage still works with single-line format", () => {
   assert.equal(items[1].remainingPercent, 62);
 });
 
+test("normalizeCodexLabel keeps model-prefixed Codex limits unique", () => {
+  assert.equal(
+    normalizeCodexLabel("GPT-5.3-Codex-Spark 週あたりの使用制限"),
+    "GPT-5.3-Codex-Spark Weekly limit",
+  );
+  assert.equal(
+    normalizeCodexLabel("GPT-5.3-Codex-Spark 5時間の使用制限"),
+    "GPT-5.3-Codex-Spark 5-hour limit",
+  );
+  assert.equal(normalizeCodexLabel("週あたりの使用制限"), "Weekly limit");
+});
+
 test("looksLikeAuthPage detects login redirects", () => {
   assert.equal(looksLikeAuthPage("Log in to continue", "https://chatgpt.com/auth/login"), true);
   assert.equal(looksLikeAuthPage("使用状況ダッシュボード", "https://chatgpt.com/codex/settings/usage"), false);
@@ -89,9 +103,41 @@ test("looksLikeAuthPage detects login redirects", () => {
   );
 });
 
+test("looksLikeChallengePage detects Cloudflare challenge screens", () => {
+  assert.equal(
+    looksLikeChallengePage(
+      "Enable JavaScript and cookies to continue",
+      "https://chatgpt.com/codex/cloud/settings/analytics?__cf_chl_rt_tk=abc",
+    ),
+    true,
+  );
+  assert.equal(
+    looksLikeChallengePage("Checking your browser before accessing", "https://challenges.cloudflare.com/turnstile"),
+    true,
+  );
+  assert.equal(
+    looksLikeChallengePage("使用状況ダッシュボード", "https://chatgpt.com/codex/cloud/settings/analytics#usage"),
+    false,
+  );
+});
+
 test("isExpectedUsageLocation distinguishes redirected pages", () => {
   assert.equal(
     isExpectedUsageLocation("https://chatgpt.com/codex/settings/usage", "https://chatgpt.com/codex/settings/usage"),
+    true,
+  );
+  assert.equal(
+    isExpectedUsageLocation(
+      "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+      "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+    ),
+    true,
+  );
+  assert.equal(
+    isExpectedUsageLocation(
+      "https://chatgpt.com/codex/cloud/settings/analytics",
+      "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+    ),
     true,
   );
   assert.equal(

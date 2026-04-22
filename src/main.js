@@ -359,6 +359,9 @@ const HIDDEN_SCRAPE_POLL_MS = 500;
 const HIDDEN_WINDOW_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36";
 const DEFAULT_CODEX_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage";
+const DEFAULT_CODEX_ANALYTICS_URL = "https://chatgpt.com/codex/cloud/settings/analytics";
+const CODEX_SETTINGS_ANALYTICS_URL = "https://chatgpt.com/codex/settings/analytics";
+const CODEX_SETTINGS_ANALYTICS_USAGE_URL = "https://chatgpt.com/codex/settings/analytics#usage";
 const LEGACY_CODEX_CLOUD_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/usage";
 const LEGACY_CODEX_USAGE_URL = "https://chatgpt.com/codex/settings/usage";
 
@@ -375,7 +378,14 @@ const PROVIDERS = {
     id: "codex",
     label: "Codex",
     url: getEnvValue("USAGE_MONITOR_CODEX_URL") || DEFAULT_CODEX_USAGE_URL,
-    acceptedUrls: [DEFAULT_CODEX_USAGE_URL, LEGACY_CODEX_CLOUD_USAGE_URL, LEGACY_CODEX_USAGE_URL],
+    acceptedUrls: [
+      DEFAULT_CODEX_USAGE_URL,
+      DEFAULT_CODEX_ANALYTICS_URL,
+      CODEX_SETTINGS_ANALYTICS_URL,
+      CODEX_SETTINGS_ANALYTICS_USAGE_URL,
+      LEGACY_CODEX_CLOUD_USAGE_URL,
+      LEGACY_CODEX_USAGE_URL,
+    ],
     partition: "persist:usage-codex",
     chromeDomains: ["chatgpt.com", "openai.com"],
     pageLoadTimeoutMs: 30 * 1000,
@@ -653,6 +663,18 @@ async function waitForUsageSnapshot(hiddenWindow, provider) {
   );
 }
 
+function parseSnapshotItems(provider, snapshot) {
+  if (!snapshot || !snapshot.text) {
+    return null;
+  }
+
+  try {
+    return provider.parser(snapshot.text);
+  } catch {
+    return null;
+  }
+}
+
 function logProviderIssue(providerId, providerState) {
   if (providerState.status !== "error") {
     return;
@@ -775,6 +797,16 @@ async function collectUsage(provider) {
         pageUrl: snapshot.url,
         errorCode: "needs-auth",
       });
+    }
+
+    const parsedItems = parseSnapshotItems(provider, snapshot);
+    if (parsedItems) {
+      return {
+        status: "ok",
+        items: parsedItems,
+        message: `${provider.label} updated`,
+        pageUrl: snapshot.url,
+      };
     }
 
     if (!isExpectedProviderLocation(provider, snapshot.url)) {

@@ -141,6 +141,13 @@ test("isExpectedUsageLocation distinguishes redirected pages", () => {
     true,
   );
   assert.equal(
+    isExpectedUsageLocation(
+      "https://chatgpt.com/codex/settings/analytics",
+      "https://chatgpt.com/codex/settings/analytics#usage",
+    ),
+    true,
+  );
+  assert.equal(
     isExpectedUsageLocation("https://chatgpt.com/", "https://chatgpt.com/codex/settings/usage"),
     false,
   );

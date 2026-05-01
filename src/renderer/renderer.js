@@ -5,6 +5,7 @@ const loadingSkeleton = document.getElementById("loading-skeleton");
 const lastUpdated = document.getElementById("last-updated");
 const refreshButton = document.getElementById("refresh-button");
 const trayModeToggle = document.getElementById("tray-mode-toggle");
+const autoLaunchToggle = document.getElementById("auto-launch-toggle");
 
 function formatTimestamp(value) {
   if (!value) {
@@ -146,6 +147,13 @@ function setToggleActive(mode) {
   });
 }
 
+function setAutoLaunchActive(enabled) {
+  const mode = enabled ? "on" : "off";
+  autoLaunchToggle.querySelectorAll(".toggle-option").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.autoLaunch === mode);
+  });
+}
+
 trayModeToggle.addEventListener("click", (e) => {
   const btn = e.target.closest(".toggle-option");
   if (!btn) return;
@@ -154,8 +162,18 @@ trayModeToggle.addEventListener("click", (e) => {
   window.usageMonitor.setTrayMode(mode);
 });
 
+autoLaunchToggle.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".toggle-option");
+  if (!btn) return;
+  const enabled = btn.dataset.autoLaunch === "on";
+  setAutoLaunchActive(enabled);
+  const saved = await window.usageMonitor.setAutoLaunch(enabled);
+  setAutoLaunchActive(saved);
+});
+
 // Initialize tray mode toggle
 window.usageMonitor.getTrayMode().then(setToggleActive);
+window.usageMonitor.getAutoLaunch().then(setAutoLaunchActive);
 
 window.usageMonitor.getState().then(render);
 window.usageMonitor.onStateUpdated(render);

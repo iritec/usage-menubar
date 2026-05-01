@@ -32,6 +32,7 @@ if (customUserDataDir) {
 
 // --- Settings persistence ---
 let cachedTrayMode = null;
+let cachedAutoLaunch = null;
 
 function getSettingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
@@ -63,6 +64,46 @@ function setTrayMode(mode) {
   const settings = loadSettings();
   settings.trayMode = validated;
   saveSettings(settings);
+}
+
+function getAutoLaunchEnabled() {
+  if (cachedAutoLaunch === null) {
+    const settings = loadSettings();
+    cachedAutoLaunch = settings.autoLaunch === false ? false : true;
+  }
+  return cachedAutoLaunch;
+}
+
+function getAutoLaunchOptions(enabled) {
+  const options = { openAtLogin: enabled };
+  if (process.platform === "darwin") {
+    options.openAsHidden = enabled;
+  }
+  return options;
+}
+
+function applyAutoLaunchSetting(enabled = getAutoLaunchEnabled()) {
+  if (isDev) {
+    return false;
+  }
+
+  try {
+    app.setLoginItemSettings(getAutoLaunchOptions(enabled));
+    return true;
+  } catch (error) {
+    console.warn("Failed to update auto launch setting:", error);
+    return false;
+  }
+}
+
+function setAutoLaunchEnabled(enabled) {
+  const validated = enabled !== false;
+  cachedAutoLaunch = validated;
+  const settings = loadSettings();
+  settings.autoLaunch = validated;
+  saveSettings(settings);
+  applyAutoLaunchSetting(validated);
+  return cachedAutoLaunch;
 }
 
 function getEnvValue(name) {
@@ -961,12 +1002,16 @@ ipcMain.handle("set-tray-mode", (_event, mode) => {
   return mode;
 });
 
+ipcMain.handle("get-auto-launch", () => getAutoLaunchEnabled());
+ipcMain.handle("set-auto-launch", (_event, enabled) => setAutoLaunchEnabled(enabled));
+
 ipcMain.handle("quit-app", () => {
   app.quit();
 });
 
 app.whenReady().then(() => {
   app.setName("Usage Menubar");
+  applyAutoLaunchSetting();
   if (!isDev && app.dock && typeof app.dock.hide === "function") {
     app.dock.hide();
   }

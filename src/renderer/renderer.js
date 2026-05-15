@@ -4,6 +4,8 @@ const itemTemplate = document.getElementById("item-template");
 const loadingSkeleton = document.getElementById("loading-skeleton");
 const lastUpdated = document.getElementById("last-updated");
 const refreshButton = document.getElementById("refresh-button");
+const updateButton = document.getElementById("update-button");
+const updateStatus = document.getElementById("update-status");
 const trayModeToggle = document.getElementById("tray-mode-toggle");
 const autoLaunchToggle = document.getElementById("auto-launch-toggle");
 
@@ -124,6 +126,13 @@ function render(state) {
   refreshButton.textContent = state.isRefreshing ? "Refreshing…" : "Refresh";
   refreshButton.disabled = !!state.isRefreshing;
 
+  if (state.update) {
+    updateButton.textContent = state.update.actionLabel || "Update";
+    updateButton.disabled = !!state.update.actionDisabled;
+    updateStatus.textContent = state.update.message || "";
+    updateStatus.dataset.status = state.update.status || "idle";
+  }
+
   providersRoot.innerHTML = "";
   Object.entries(state.providers).forEach(([providerId, provider]) => {
     providersRoot.appendChild(renderProvider(providerId, provider));
@@ -134,6 +143,16 @@ refreshButton.addEventListener("click", () => {
   refreshButton.textContent = "Refreshing…";
   refreshButton.disabled = true;
   window.usageMonitor.refreshAll();
+});
+
+updateButton.addEventListener("click", async () => {
+  updateButton.disabled = true;
+  const state = await window.usageMonitor.getState();
+  if (state.update?.status === "downloaded") {
+    await window.usageMonitor.installUpdate();
+    return;
+  }
+  await window.usageMonitor.checkForUpdates();
 });
 
 document.getElementById("quit-button").addEventListener("click", () => {

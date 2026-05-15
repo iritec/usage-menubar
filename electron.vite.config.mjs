@@ -13,6 +13,7 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, "src/main.js"),
           parsers: resolve(__dirname, "src/parsers.js"),
+          "update-state": resolve(__dirname, "src/update-state.js"),
         },
       },
     },

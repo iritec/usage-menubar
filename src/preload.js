@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld("usageMonitor", {
   setTrayMode: (mode) => ipcRenderer.invoke("set-tray-mode", mode),
   getAutoLaunch: () => ipcRenderer.invoke("get-auto-launch"),
   setAutoLaunch: (enabled) => ipcRenderer.invoke("set-auto-launch", enabled),
+  checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
+  installUpdate: () => ipcRenderer.invoke("install-update"),
   quit: () => ipcRenderer.invoke("quit-app"),
   onStateUpdated: (callback) => {
     const listener = (_event, state) => callback(state);

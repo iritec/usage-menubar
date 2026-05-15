@@ -1,7 +1,6 @@
 {
   "name": "usage-menubar",
   "version": "0.3.2",
-
   "description": "macOS menubar app for Claude and Codex usage tracking",
   "main": "dist/main/index.js",
   "scripts": {
@@ -12,11 +11,19 @@
     "pack": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --dir",
     "dist": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac",
     "dist:mac:prod": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --arm64",
-    "dist:mac:prod:x64": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --x64"
+    "dist:mac:prod:x64": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --x64",
+    "release:mac": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --arm64 --publish always"
   },
   "build": {
     "appId": "com.kingcoding.usage-menubar",
     "productName": "Usage Menubar",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "iritec",
+        "repo": "usage-menubar"
+      }
+    ],
     "files": [
       "dist/main/**/*",
       "dist/preload/**/*",
@@ -47,5 +54,7 @@
     "electron-builder": "^25.1.8",
     "electron-vite": "^3.1.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "electron-updater": "^6.8.3"
+  }
 }

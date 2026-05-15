@@ -12,6 +12,7 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve(__dirname, "src/main.js"),
+          "auth-state": resolve(__dirname, "src/auth-state.js"),
           parsers: resolve(__dirname, "src/parsers.js"),
         },
       },

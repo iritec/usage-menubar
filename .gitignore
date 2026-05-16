@@ -5,3 +5,4 @@ release
 .playwright-mcp/
 .tmp/
 .omx/
+*.tgz

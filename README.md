@@ -43,6 +43,15 @@ pnpm dev
 pnpm dist      # macOS distributable .dmg / .zip
 ```
 
+### Release
+
+```bash
+GH_TOKEN=... pnpm release:mac
+```
+
+Use the release script when publishing auto-updateable builds. It uploads the
+macOS zip, dmg, and `latest-mac.yml` metadata required by the in-app updater.
+
 ## Built with KingCoding
 
 This app was built with [KingCoding](https://kingcode.shingoirie.com/) — an AI-powered coding assistant that lets you ship real apps fast.

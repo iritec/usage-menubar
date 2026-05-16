@@ -13,6 +13,7 @@ const {
   shell,
   session,
 } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const {
   formatTrayTitle,
   isExpectedUsageLocation,
@@ -26,6 +27,12 @@ const {
   shouldClearAppSessionAuth,
   shouldMarkAppSessionAuth,
 } = require("./auth-state");
+const {
+  UPDATE_STATUS,
+  createInitialUpdateState,
+  decorateUpdateState,
+  formatDownloadMessage,
+} = require("./update-state");
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const isDev = !app.isPackaged;
 const customUserDataDir = process.env.USAGE_MONITOR_USER_DATA_DIR;
@@ -131,6 +138,17 @@ function getEnvValue(name) {
 
 function shouldIncludeVerboseDiagnostics() {
   return getEnvValue("USAGE_MONITOR_DEBUG_DIAGNOSTICS") === "1";
+}
+
+function getUpdateFeedOverride() {
+  const url = getEnvValue("USAGE_MONITOR_UPDATE_FEED_URL");
+  if (!url) {
+    return null;
+  }
+  return {
+    provider: "generic",
+    url,
+  };
 }
 
 function getChromeProfileDirs() {
@@ -420,6 +438,7 @@ async function collectClaudeUsageViaApi(provider) {
 }
 
 const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_HIDDEN_PAGE_LOAD_TIMEOUT_MS = 15 * 1000;
 const DEFAULT_HIDDEN_SCRAPE_TIMEOUT_MS = 10 * 1000;
 const HIDDEN_SCRAPE_POLL_MS = 500;
@@ -466,6 +485,7 @@ const PROVIDERS = {
 const state = {
   isRefreshing: false,
   lastUpdatedAt: null,
+  update: createInitialUpdateState(app.getVersion()),
   providers: {
     claude: {
       status: "idle",
@@ -489,6 +509,7 @@ let popupWindow = null;
 const loginWindows = new Map();
 const loginRefreshTimers = new Map();
 let refreshTimer = null;
+let updateTimer = null;
 
 function createTrayIcon() {
   const svg = `
@@ -514,6 +535,14 @@ function broadcastState() {
     return;
   }
   popupWindow.webContents.send("state-updated", cloneState());
+}
+
+function setUpdateState(nextState) {
+  state.update = decorateUpdateState({
+    ...state.update,
+    ...nextState,
+  });
+  broadcastState();
 }
 
 function updateTrayTitle() {
@@ -594,7 +623,22 @@ function togglePopupWindow() {
 }
 
 function buildContextMenu() {
+  const updateLabel =
+    state.update.status === UPDATE_STATUS.DOWNLOADED ? "Install Update" : "Check for Updates";
+
   return Menu.buildFromTemplate([
+    {
+      label: updateLabel,
+      enabled: !state.update.actionDisabled,
+      click: () => {
+        if (state.update.status === UPDATE_STATUS.DOWNLOADED) {
+          installUpdate();
+        } else {
+          checkForUpdates(true);
+        }
+      },
+    },
+    { type: "separator" },
     {
       label: "Quit",
       click: () => app.quit(),
@@ -1296,6 +1340,158 @@ function scheduleRefresh() {
   }, REFRESH_INTERVAL_MS);
 }
 
+function initAutoUpdater() {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  const updateFeedOverride = getUpdateFeedOverride();
+
+  if (updateFeedOverride) {
+    autoUpdater.setFeedURL(updateFeedOverride);
+  }
+
+  if (isDev && !updateFeedOverride) {
+    setUpdateState({
+      status: UPDATE_STATUS.DISABLED,
+      message: "Updates are available in the packaged app",
+      errorCode: null,
+    });
+    return;
+  }
+
+  autoUpdater.on("checking-for-update", () => {
+    setUpdateState({
+      status: UPDATE_STATUS.CHECKING,
+      message: "Checking for updates...",
+      percent: null,
+      errorCode: null,
+    });
+  });
+
+  autoUpdater.on("update-available", (info) => {
+    setUpdateState({
+      status: UPDATE_STATUS.DOWNLOADING,
+      message: formatDownloadMessage(info.version, null),
+      availableVersion: info.version || null,
+      percent: null,
+      errorCode: null,
+    });
+  });
+
+  autoUpdater.on("download-progress", (progress) => {
+    const percent = Number.isFinite(progress.percent) ? Math.round(progress.percent) : null;
+    setUpdateState({
+      status: UPDATE_STATUS.DOWNLOADING,
+      message: formatDownloadMessage(state.update.availableVersion, percent),
+      percent,
+      errorCode: null,
+    });
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    setUpdateState({
+      status: UPDATE_STATUS.DOWNLOADED,
+      message: `Update ${info.version || ""} is ready to install`.trim(),
+      downloadedVersion: info.version || state.update.availableVersion,
+      percent: 100,
+      errorCode: null,
+    });
+  });
+
+  autoUpdater.on("update-not-available", () => {
+    setUpdateState({
+      status: UPDATE_STATUS.CURRENT,
+      message: "Up to date",
+      availableVersion: null,
+      downloadedVersion: null,
+      percent: null,
+      lastCheckedAt: new Date().toISOString(),
+      errorCode: null,
+    });
+  });
+
+  autoUpdater.on("error", (error) => {
+    setUpdateState({
+      status: UPDATE_STATUS.ERROR,
+      message: error.message || "Update check failed",
+      percent: null,
+      lastCheckedAt: new Date().toISOString(),
+      errorCode: error.code || "update-error",
+    });
+    console.warn("Auto update failed:", error);
+  });
+}
+
+async function checkForUpdates(isManual = false) {
+  if (isDev && !getUpdateFeedOverride()) {
+    setUpdateState({
+      status: UPDATE_STATUS.DISABLED,
+      message: "Updates are available in the packaged app",
+      errorCode: null,
+    });
+    return cloneState().update;
+  }
+
+  if (
+    state.update.status === UPDATE_STATUS.CHECKING
+    || state.update.status === UPDATE_STATUS.DOWNLOADING
+    || state.update.status === UPDATE_STATUS.DOWNLOADED
+  ) {
+    return cloneState().update;
+  }
+
+  try {
+    if (isManual) {
+      setUpdateState({
+        status: UPDATE_STATUS.CHECKING,
+        message: "Checking for updates...",
+        percent: null,
+        errorCode: null,
+      });
+    }
+    const result = await autoUpdater.checkForUpdates();
+    result?.downloadPromise?.catch((error) => {
+      setUpdateState({
+        status: UPDATE_STATUS.ERROR,
+        message: error.message || "Update download failed",
+        percent: null,
+        lastCheckedAt: new Date().toISOString(),
+        errorCode: error.code || "update-download-error",
+      });
+      console.warn("Auto update download failed:", error);
+    });
+  } catch (error) {
+    setUpdateState({
+      status: UPDATE_STATUS.ERROR,
+      message: error.message || "Update check failed",
+      percent: null,
+      lastCheckedAt: new Date().toISOString(),
+      errorCode: error.code || "update-error",
+    });
+  }
+
+  return cloneState().update;
+}
+
+function installUpdate() {
+  if (state.update.status !== UPDATE_STATUS.DOWNLOADED) {
+    return false;
+  }
+  autoUpdater.quitAndInstall(false, true);
+  return true;
+}
+
+function scheduleUpdateCheck() {
+  if (updateTimer) {
+    clearInterval(updateTimer);
+  }
+  setTimeout(() => {
+    checkForUpdates(false);
+  }, 30 * 1000);
+  updateTimer = setInterval(() => {
+    checkForUpdates(false);
+  }, UPDATE_CHECK_INTERVAL_MS);
+}
+
 ipcMain.handle("get-state", () => cloneState());
 ipcMain.handle("refresh-all", () => refreshAll(true));
 ipcMain.handle("open-login", (_event, providerId) => {
@@ -1317,6 +1513,8 @@ ipcMain.handle("set-tray-mode", (_event, mode) => {
 
 ipcMain.handle("get-auto-launch", () => getAutoLaunchEnabled());
 ipcMain.handle("set-auto-launch", (_event, enabled) => setAutoLaunchEnabled(enabled));
+ipcMain.handle("check-for-updates", () => checkForUpdates(true));
+ipcMain.handle("install-update", () => installUpdate());
 
 ipcMain.handle("quit-app", () => {
   app.quit();
@@ -1334,12 +1532,14 @@ app.whenReady().then(() => {
 
   createPopupWindow();
   createTray();
+  initAutoUpdater();
   if (isDev) {
     popupWindow.center();
     popupWindow.show();
     popupWindow.focus();
   }
   scheduleRefresh();
+  scheduleUpdateCheck();
   refreshAll(false);
 });
 
@@ -1352,5 +1552,8 @@ app.on("activate", () => {
 app.on("before-quit", () => {
   if (refreshTimer) {
     clearInterval(refreshTimer);
+  }
+  if (updateTimer) {
+    clearInterval(updateTimer);
   }
 });

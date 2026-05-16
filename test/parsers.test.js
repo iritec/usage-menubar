@@ -14,6 +14,11 @@ const {
   parseClaudeUsage,
   parseCodexUsage,
 } = require("../src/parsers");
+const {
+  createInitialUpdateState,
+  decorateUpdateState,
+  formatDownloadMessage,
+} = require("../src/update-state");
 
 test("parseClaudeUsage extracts current and weekly usage blocks", () => {
   const items = parseClaudeUsage(`
@@ -255,4 +260,44 @@ test("app session auth marker is cleared only when provider reports auth is miss
   assert.equal(shouldClearAppSessionAuth({ status: "needs-auth" }), true);
   assert.equal(shouldClearAppSessionAuth({ status: "error", errorCode: "challenge" }), false);
   assert.equal(shouldClearAppSessionAuth({ status: "ok" }), false);
+});
+
+test("update state exposes safe action labels for renderer", () => {
+  assert.deepEqual(createInitialUpdateState("0.3.2"), {
+    status: "idle",
+    message: "Updates not checked yet",
+    currentVersion: "0.3.2",
+    availableVersion: null,
+    downloadedVersion: null,
+    percent: null,
+    lastCheckedAt: null,
+    errorCode: null,
+    actionLabel: "Update",
+    actionDisabled: false,
+  });
+
+  assert.deepEqual(
+    decorateUpdateState({ status: "downloaded", message: "Ready" }),
+    {
+      status: "downloaded",
+      message: "Ready",
+      actionLabel: "Install",
+      actionDisabled: false,
+    },
+  );
+
+  assert.deepEqual(
+    decorateUpdateState({ status: "downloading", message: "Downloading" }),
+    {
+      status: "downloading",
+      message: "Downloading",
+      actionLabel: "Downloading",
+      actionDisabled: true,
+    },
+  );
+});
+
+test("formatDownloadMessage includes progress only when available", () => {
+  assert.equal(formatDownloadMessage("0.3.3", null), "Downloading 0.3.3");
+  assert.equal(formatDownloadMessage("0.3.3", 41.6), "Downloading 0.3.3 (42%)");
 });

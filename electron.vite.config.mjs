@@ -14,6 +14,7 @@ export default defineConfig({
           index: resolve(__dirname, "src/main.js"),
           "auth-state": resolve(__dirname, "src/auth-state.js"),
           parsers: resolve(__dirname, "src/parsers.js"),
+          "update-state": resolve(__dirname, "src/update-state.js"),
         },
       },
     },

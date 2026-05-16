@@ -1,6 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  shouldClearAppSessionAuth,
+  shouldMarkAppSessionAuth,
+} = require("../src/auth-state");
+const {
   formatTrayTitle,
   isExpectedUsageLocation,
   looksLikeAuthPage,
@@ -238,4 +242,17 @@ test("mergeProviderState preserves previous items for loading and failures", () 
       stale: true,
     },
   );
+});
+
+test("app session auth marker is only persisted after verified in-app success", () => {
+  assert.equal(shouldMarkAppSessionAuth({ status: "ok" }, { skipChromeImport: true }), true);
+  assert.equal(shouldMarkAppSessionAuth({ status: "ok" }, { skipChromeImport: false }), false);
+  assert.equal(shouldMarkAppSessionAuth({ status: "error" }, { skipChromeImport: true }), false);
+  assert.equal(shouldMarkAppSessionAuth({ status: "needs-auth" }, { skipChromeImport: true }), false);
+});
+
+test("app session auth marker is cleared only when provider reports auth is missing", () => {
+  assert.equal(shouldClearAppSessionAuth({ status: "needs-auth" }), true);
+  assert.equal(shouldClearAppSessionAuth({ status: "error", errorCode: "challenge" }), false);
+  assert.equal(shouldClearAppSessionAuth({ status: "ok" }), false);
 });

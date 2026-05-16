@@ -3,3 +3,5 @@ dist
 release
 .DS_Store
 .playwright-mcp/
+.tmp/
+.omx/

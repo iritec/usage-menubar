@@ -22,6 +22,10 @@ const {
   parseClaudeUsage,
   parseCodexUsage,
 } = require("./parsers");
+const {
+  shouldClearAppSessionAuth,
+  shouldMarkAppSessionAuth,
+} = require("./auth-state");
 const rendererUrl = process.env.ELECTRON_RENDERER_URL;
 const isDev = !app.isPackaged;
 const customUserDataDir = process.env.USAGE_MONITOR_USER_DATA_DIR;
@@ -106,9 +110,27 @@ function setAutoLaunchEnabled(enabled) {
   return cachedAutoLaunch;
 }
 
+function hasAppSessionAuth(providerId) {
+  const settings = loadSettings();
+  return !!settings.appSessionAuth?.[providerId];
+}
+
+function setAppSessionAuth(providerId, enabled) {
+  const settings = loadSettings();
+  settings.appSessionAuth = {
+    ...(settings.appSessionAuth || {}),
+    [providerId]: !!enabled,
+  };
+  saveSettings(settings);
+}
+
 function getEnvValue(name) {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : null;
+}
+
+function shouldIncludeVerboseDiagnostics() {
+  return getEnvValue("USAGE_MONITOR_DEBUG_DIAGNOSTICS") === "1";
 }
 
 function getChromeProfileDirs() {
@@ -296,8 +318,12 @@ async function importChromeCookies(provider) {
     }
 
     return { importedCount, profilePath: best.profilePath };
-  } catch {
-    return { importedCount: 0, profilePath: null };
+  } catch (error) {
+    return {
+      importedCount: 0,
+      profilePath: null,
+      error: error.message || "Chrome cookie import failed",
+    };
   }
 }
 
@@ -431,7 +457,7 @@ const PROVIDERS = {
     chromeDomains: ["chatgpt.com", "openai.com"],
     pageLoadTimeoutMs: 30 * 1000,
     scrapeTimeoutMs: 45 * 1000,
-    resetStorageBeforeRefresh: true,
+    resetStorageBeforeRefresh: false,
     waitForTexts: ["使用状況ダッシュボード", "Usage dashboard", "残高", "Balance"],
     parser: parseCodexUsage,
   },
@@ -460,6 +486,8 @@ const state = {
 
 let tray = null;
 let popupWindow = null;
+const loginWindows = new Map();
+const loginRefreshTimers = new Map();
 let refreshTimer = null;
 
 function createTrayIcon() {
@@ -594,6 +622,22 @@ function createProviderResult(status, provider, message, extras = {}) {
   };
 }
 
+function createChromeImportDiagnostic(importResult) {
+  if (!importResult) {
+    return null;
+  }
+
+  return {
+    chromeImport: {
+      importedCount: importResult.importedCount || 0,
+      profilePath: importResult.profilePath || null,
+      error: importResult.error || null,
+      skipped: !!importResult.skipped,
+      reason: importResult.reason || null,
+    },
+  };
+}
+
 function createTaggedError(code, message, extras = {}) {
   const error = new Error(message);
   error.code = code;
@@ -640,7 +684,10 @@ async function capturePageSnapshot(hiddenWindow) {
     ({
       url: window.location.href,
       title: document.title,
-      text: document.body ? document.body.innerText : ""
+      text: document.body ? document.body.innerText : "",
+      readyState: document.readyState,
+      localStorageKeys: Object.keys(window.localStorage || {}),
+      sessionStorageKeys: Object.keys(window.sessionStorage || {})
     })
   `);
 }
@@ -716,6 +763,49 @@ function parseSnapshotItems(provider, snapshot) {
   }
 }
 
+function createSnapshotDiagnostic(snapshot, extras = {}) {
+  if (!snapshot) {
+    return {
+      ...extras,
+      snapshot: null,
+    };
+  }
+
+  const text = snapshot.text || "";
+  const diagnostic = {
+    ...extras,
+    snapshot: {
+      url: snapshot.url || null,
+      title: snapshot.title || "",
+      readyState: snapshot.readyState || "",
+      textLength: text.length,
+    },
+  };
+
+  if (shouldIncludeVerboseDiagnostics()) {
+    diagnostic.snapshot.preview = text.replace(/\n/g, " ").substring(0, 240);
+    diagnostic.snapshot.localStorageKeys = snapshot.localStorageKeys || [];
+    diagnostic.snapshot.sessionStorageKeys = snapshot.sessionStorageKeys || [];
+  }
+
+  return diagnostic;
+}
+
+async function getProviderCookieDiagnostic(provider) {
+  const targetSession = session.fromPartition(provider.partition);
+  const cookies = await targetSession.cookies.get({});
+  const matchingCookies = cookies.filter((cookie) => cookieMatchesDomains(cookie.domain, provider.chromeDomains));
+  const authCookieNames = matchingCookies
+    .map((cookie) => cookie.name)
+    .filter((name) => /(auth|session|token|csrf|login|__Secure|__Host)/i.test(name))
+    .sort();
+
+  return {
+    cookieCount: matchingCookies.length,
+    authCookieNames: shouldIncludeVerboseDiagnostics() ? Array.from(new Set(authCookieNames)) : [],
+  };
+}
+
 function logProviderIssue(providerId, providerState) {
   if (providerState.status !== "error") {
     return;
@@ -731,6 +821,16 @@ function logProviderIssue(providerId, providerState) {
 function isExpectedProviderLocation(provider, currentUrl) {
   const expectedUrls = [provider.url, ...(provider.acceptedUrls || [])];
   return expectedUrls.some((expectedUrl) => isExpectedUsageLocation(currentUrl, expectedUrl));
+}
+
+function isProviderOriginLocation(provider, currentUrl) {
+  try {
+    const current = new URL(currentUrl);
+    const expected = new URL(provider.url);
+    return current.origin === expected.origin;
+  } catch {
+    return false;
+  }
 }
 
 async function collectUsage(provider) {
@@ -805,10 +905,7 @@ async function collectUsage(provider) {
         return createProviderResult("error", provider, `${provider.label} blocked by Cloudflare challenge`, {
           pageUrl: finalSnapshot.url,
           errorCode: "challenge",
-          diagnostic: {
-            title: finalSnapshot.title || "",
-            preview: (finalSnapshot.text || "").replace(/\n/g, " ").substring(0, 120),
-          },
+          diagnostic: createSnapshotDiagnostic(finalSnapshot),
         });
       }
 
@@ -816,10 +913,7 @@ async function collectUsage(provider) {
         return createProviderResult("error", provider, `${provider.label} redirected away from usage page`, {
           pageUrl: finalSnapshot.url,
           errorCode: "redirect",
-          diagnostic: {
-            title: finalSnapshot.title || "",
-            preview: (finalSnapshot.text || "").replace(/\n/g, " ").substring(0, 120),
-          },
+          diagnostic: createSnapshotDiagnostic(finalSnapshot),
         });
       }
 
@@ -830,6 +924,7 @@ async function collectUsage(provider) {
           || hiddenWindow.webContents.getURL()
           || provider.url,
         errorCode: error.code || "timeout",
+        diagnostic: createSnapshotDiagnostic(finalSnapshot || error.snapshot || null),
       });
     }
 
@@ -866,15 +961,12 @@ async function collectUsage(provider) {
         pageUrl: snapshot.url,
       };
     } catch (parseError) {
-      const preview = (snapshot.text || "").replace(/\n/g, " ").substring(0, 120);
       return createProviderResult("error", provider, `${provider.label} usage data could not be parsed`, {
         pageUrl: snapshot.url,
         errorCode: "parse-failed",
-        diagnostic: {
+        diagnostic: createSnapshotDiagnostic(snapshot, {
           parserMessage: parseError.message,
-          preview,
-          title: snapshot.title || "",
-        },
+        }),
       });
     }
   } finally {
@@ -885,7 +977,42 @@ async function collectUsage(provider) {
   }
 }
 
-async function refreshProvider(providerId, isManual = false) {
+async function collectUsageFromWindow(provider, sourceWindow) {
+  try {
+    const snapshot = await waitForUsageSnapshot(sourceWindow, provider);
+
+    if (looksLikeAuthPage(snapshot.text, snapshot.url)) {
+      return createProviderResult("needs-auth", provider, `${provider.label} needs login`, {
+        pageUrl: snapshot.url,
+        errorCode: "needs-auth",
+      });
+    }
+
+    const parsedItems = parseSnapshotItems(provider, snapshot);
+    if (parsedItems) {
+      return {
+        status: "ok",
+        items: parsedItems,
+        message: `${provider.label} updated`,
+        pageUrl: snapshot.url,
+      };
+    }
+
+    return createProviderResult("error", provider, `${provider.label} usage data could not be parsed`, {
+      pageUrl: snapshot.url,
+      errorCode: "parse-failed",
+      diagnostic: createSnapshotDiagnostic(snapshot, { source: "login-window" }),
+    });
+  } catch (error) {
+    return createProviderResult("error", provider, error.message || `${provider.label} usage data timed out`, {
+      pageUrl: error.pageUrl || sourceWindow.webContents.getURL() || provider.url,
+      errorCode: error.code || "timeout",
+      diagnostic: createSnapshotDiagnostic(error.snapshot || null, { source: "login-window" }),
+    });
+  }
+}
+
+async function refreshProvider(providerId, isManual = false, options = {}) {
   const provider = PROVIDERS[providerId];
   if (!provider) {
     return;
@@ -905,8 +1032,21 @@ async function refreshProvider(providerId, isManual = false) {
       await clearProviderStorage(provider);
     }
 
-    // Always import Chrome cookies first to ensure session is fresh
-    await importChromeCookies(provider);
+    // Chrome import is a convenience path. Once a provider has logged in inside
+    // the Electron session, do not overwrite that session with browser cookies.
+    const shouldImportChromeCookies = !options.skipChromeImport && !hasAppSessionAuth(providerId);
+    const importResult = shouldImportChromeCookies
+      ? await importChromeCookies(provider)
+      : {
+          importedCount: 0,
+          profilePath: null,
+          skipped: true,
+          reason: "app-session-auth",
+        };
+    const importDiagnostic = createChromeImportDiagnostic(importResult);
+    const cookieDiagnostic = await getProviderCookieDiagnostic(provider).catch((error) => ({
+      cookieError: error.message || "Cookie diagnostics failed",
+    }));
 
     let result = null;
 
@@ -931,8 +1071,40 @@ async function refreshProvider(providerId, isManual = false) {
           });
     }
 
+    if (hasAppSessionAuth(providerId) && shouldClearAppSessionAuth(result)) {
+      setAppSessionAuth(providerId, false);
+    }
+
+    if (shouldMarkAppSessionAuth(result, options)) {
+      setAppSessionAuth(providerId, true);
+    }
+
+    if (providerId === "codex" && result.status === "needs-auth") {
+      result = {
+        ...result,
+        message: `Log in to ${provider.label} in this app, then refresh`,
+      };
+    }
+
+    if (
+      providerId === "codex"
+      && result.status === "error"
+      && ["challenge", "redirect"].includes(result.errorCode)
+    ) {
+      result = {
+        ...result,
+        message: `Open ${provider.label} login in this app, then refresh`,
+      };
+    }
+
     const nextState = mergeProviderState(previousState, {
       ...result,
+      chromeConnected: importResult.importedCount > 0,
+      diagnostic: {
+        ...(result.diagnostic && typeof result.diagnostic === "object" ? result.diagnostic : {}),
+        ...(importDiagnostic || {}),
+        cookies: cookieDiagnostic,
+      },
       lastUpdatedAt: new Date().toISOString(),
     });
     setProviderState(providerId, nextState);
@@ -948,6 +1120,152 @@ async function refreshProvider(providerId, isManual = false) {
     setProviderState(providerId, nextState);
     logProviderIssue(providerId, nextState);
   }
+}
+
+function openProviderLogin(providerId) {
+  const provider = PROVIDERS[providerId];
+  if (!provider) {
+    return;
+  }
+
+  const existingWindow = loginWindows.get(providerId);
+  if (existingWindow && !existingWindow.isDestroyed()) {
+    existingWindow.show();
+    existingWindow.focus();
+    return;
+  }
+
+  const authSession = session.fromPartition(provider.partition);
+  let hasNavigatedToUsageAfterLogin = false;
+  let hasSeenAuthNavigation = false;
+  const loginWindow = new BrowserWindow({
+    width: 1100,
+    height: 820,
+    title: `${provider.label} Login`,
+    show: true,
+    webPreferences: {
+      partition: provider.partition,
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  loginWindows.set(providerId, loginWindow);
+  setProviderState(providerId, mergeProviderState(state.providers[providerId], {
+    status: "needs-auth",
+    items: [],
+    message: `Log in to ${provider.label} in this app, then close the login window`,
+  }));
+
+  const refreshAfterLoginNavigation = (url) => {
+    const existingTimer = loginRefreshTimers.get(providerId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(async () => {
+      loginRefreshTimers.delete(providerId);
+      try {
+        await authSession.flushStorageData();
+      } catch {}
+      if (!state.isRefreshing) {
+        const loginWindowResult = await collectUsageFromWindow(provider, loginWindow);
+        if (loginWindowResult.status === "ok") {
+          setAppSessionAuth(providerId, true);
+          setProviderState(providerId, mergeProviderState(state.providers[providerId], {
+            ...loginWindowResult,
+            chromeConnected: false,
+            diagnostic: {
+              chromeImport: {
+                importedCount: 0,
+                profilePath: null,
+                error: null,
+                skipped: true,
+                reason: "app-session-auth",
+              },
+            },
+            lastUpdatedAt: new Date().toISOString(),
+          }));
+          return;
+        }
+
+        await refreshProvider(providerId, true, { skipChromeImport: true });
+      }
+    }, 1500);
+
+    loginRefreshTimers.set(providerId, timer);
+    setProviderState(providerId, mergeProviderState(state.providers[providerId], {
+      status: "needs-auth",
+      items: [],
+      message: `${provider.label} login detected. Refreshing usage...`,
+      pageUrl: url,
+    }));
+  };
+
+  const notePotentialLogin = (_event, url) => {
+    if (looksLikeAuthPage("", url)) {
+      hasSeenAuthNavigation = true;
+      const existingTimer = loginRefreshTimers.get(providerId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        loginRefreshTimers.delete(providerId);
+      }
+      return;
+    }
+
+    if (!isProviderOriginLocation(provider, url)) {
+      return;
+    }
+
+    if (!isExpectedProviderLocation(provider, url)) {
+      if (!hasNavigatedToUsageAfterLogin) {
+        hasNavigatedToUsageAfterLogin = true;
+        loginWindow.loadURL(provider.url, {
+          userAgent: HIDDEN_WINDOW_USER_AGENT,
+        }).catch((error) => {
+          setProviderState(providerId, mergeProviderState(state.providers[providerId], {
+            status: "error",
+            items: [],
+            message: error.message || `${provider.label} usage page failed to load after login`,
+            errorCode: "post-login-load-failed",
+          }));
+        });
+      }
+      return;
+    }
+
+    if (hasSeenAuthNavigation || hasAppSessionAuth(providerId)) {
+      refreshAfterLoginNavigation(url);
+    }
+  };
+
+  loginWindow.webContents.on("did-navigate", notePotentialLogin);
+  loginWindow.webContents.on("did-navigate-in-page", notePotentialLogin);
+  loginWindow.on("closed", async () => {
+    loginWindows.delete(providerId);
+    const existingTimer = loginRefreshTimers.get(providerId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      loginRefreshTimers.delete(providerId);
+    }
+    try {
+      await authSession.flushStorageData();
+    } catch {}
+    if (!state.isRefreshing) {
+      await refreshProvider(providerId, true, { skipChromeImport: true });
+    }
+  });
+
+  loginWindow.loadURL(provider.url, {
+    userAgent: HIDDEN_WINDOW_USER_AGENT,
+  }).catch((error) => {
+    setProviderState(providerId, mergeProviderState(state.providers[providerId], {
+      status: "error",
+      items: [],
+      message: error.message || `${provider.label} login window failed to load`,
+      errorCode: "login-load-failed",
+    }));
+  });
 }
 
 async function refreshAll(isManual = false) {
@@ -981,12 +1299,7 @@ function scheduleRefresh() {
 ipcMain.handle("get-state", () => cloneState());
 ipcMain.handle("refresh-all", () => refreshAll(true));
 ipcMain.handle("open-login", (_event, providerId) => {
-  const provider = PROVIDERS[providerId];
-  if (!provider) {
-    return;
-  }
-  // Open in user's Chrome so they can log in with their real session
-  shell.openExternal(provider.url);
+  openProviderLogin(providerId);
 });
 ipcMain.handle("open-external", (_event, providerId) => {
   const provider = PROVIDERS[providerId];

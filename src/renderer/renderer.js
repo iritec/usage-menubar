@@ -38,6 +38,25 @@ function getProgressColorClass(percent) {
   return "";
 }
 
+function formatDiagnosticMessage(provider) {
+  const snapshot = provider.diagnostic?.snapshot;
+  if (!snapshot) {
+    return "";
+  }
+
+  const bits = [];
+  if (snapshot.url) {
+    bits.push(`URL: ${snapshot.url}`);
+  }
+  if (snapshot.title) {
+    bits.push(`Title: ${snapshot.title}`);
+  }
+  if (snapshot.textLength) {
+    bits.push(`Text: ${snapshot.textLength} chars`);
+  }
+  return bits.length ? ` ${bits.join(" | ")}` : "";
+}
+
 function renderUsageItem(item) {
   const fragment = itemTemplate.content.cloneNode(true);
   fragment.querySelector(".usage-label").textContent = item.label;
@@ -61,8 +80,10 @@ function renderProvider(providerId, provider) {
   fragment.querySelector(".provider-status").textContent = formatStatus(provider.status);
   const providerMessage = provider.stale && provider.items.length
     ? `${provider.message || ""} Showing last successful snapshot.`.trim()
-    : (provider.message || "");
+    : `${provider.message || ""}${provider.status === "error" ? formatDiagnosticMessage(provider) : ""}`.trim();
   fragment.querySelector(".provider-message").textContent = providerMessage;
+  const canLogin =
+    provider.status === "needs-auth" || (providerId === "codex" && provider.status === "error");
 
   const itemList = fragment.querySelector(".item-list");
   if (provider.items.length) {
@@ -80,9 +101,10 @@ function renderProvider(providerId, provider) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
     if (provider.status === "needs-auth") {
+      const loginHint = "Log in inside this app, then press Refresh";
       empty.innerHTML =
         '<svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
-        + '<span>Log in via Chrome, then press Refresh</span>';
+        + `<span>${loginHint}</span>`;
     } else {
       empty.innerHTML =
         '<svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="4" height="9"/><rect x="10" y="7" width="4" height="14"/><rect x="17" y="3" width="4" height="18"/></svg>'
@@ -92,8 +114,8 @@ function renderProvider(providerId, provider) {
   }
 
   const loginButton = fragment.querySelector(".login-button");
-  if (provider.status === "needs-auth") {
-    loginButton.textContent = "Login in Chrome";
+  if (canLogin) {
+    loginButton.textContent = "Login";
     loginButton.addEventListener("click", () => {
       window.usageMonitor.openLogin(providerId);
     });

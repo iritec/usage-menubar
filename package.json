@@ -12,7 +12,8 @@
     "dist": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac",
     "dist:mac:prod": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --arm64",
     "dist:mac:prod:x64": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --x64",
-    "release:mac": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --arm64 --publish always"
+    "remove-release-blockmaps": "node scripts/remove-release-blockmaps.js",
+    "release:mac": "pnpm build && env -u ELECTRON_RUN_AS_NODE -u ELECTRON_RENDERER_URL -u ELECTRON_EXEC_PATH -u ELECTRON_MAJOR_VER -u ELECTRON_CLI_ARGS electron-builder --mac --arm64 --publish always && pnpm remove-release-blockmaps"
   },
   "build": {
     "appId": "com.kingcoding.usage-menubar",
@@ -41,6 +42,9 @@
         "dmg",
         "zip"
       ]
+    },
+    "dmg": {
+      "writeUpdateInfo": false
     }
   },
   "pnpm": {

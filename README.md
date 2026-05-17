@@ -46,11 +46,19 @@ pnpm dist      # macOS distributable .dmg / .zip
 ### Release
 
 ```bash
-GH_TOKEN=... pnpm release:mac
+VERSION=0.3.4
+npm version "$VERSION" --no-git-tag-version
+git add package.json
+git commit -m "release: v$VERSION"
+git tag "v$VERSION"
+git push origin main
+git push origin "v$VERSION"
+GH_TOKEN=... APPLE_KEYCHAIN_PROFILE=... pnpm release:mac
 ```
 
-Use the release script when publishing auto-updateable builds. It uploads the
-macOS zip, dmg, and `latest-mac.yml` metadata required by the in-app updater.
+Set `VERSION` to the version being published. Push the version tag before
+running the release script. The release script uploads the macOS zip, dmg,
+and `latest-mac.yml` metadata required by the in-app updater.
 
 ## Built with KingCoding
 

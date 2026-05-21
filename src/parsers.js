@@ -126,8 +126,11 @@ function findCodexTitle(lines, percentIndex) {
 }
 
 const CODEX_LABEL_MAP = [
-  { match: /5時間の使用制限|5.?hour/i, label: "5-hour limit" },
-  { match: /週あたりの使用制限|weekly/i, label: "Weekly limit" },
+  { match: /(?:5\s*時間|5.?hour).*(?:使用制限|利用上限|limit)|5.?hour/i, label: "5-hour limit" },
+  {
+    match: /(?:週あたり|(?:\d+\s*)?週間?あたり|週間|weekly).*(?:使用制限|利用上限|上限|limit)|weekly/i,
+    label: "Weekly limit",
+  },
 ];
 
 function normalizeCodexLabel(raw) {
@@ -246,7 +249,7 @@ function formatTrayTitle(state, mode = "weekly") {
   const codexItem =
     mode === "session"
       ? getProviderDisplayItem(codex, ["5時間", "5h", "5-hour", "5 hour"])
-      : getProviderDisplayItem(codex, ["週あたり", "weekly", "5時間", "5h", "5-hour", "5 hour"]);
+      : getProviderDisplayItem(codex, ["週あたり", "週間あたり", "週間利用", "weekly", "5時間", "5h", "5-hour", "5 hour"]);
   const claudeReset = mode === "weekly" ? formatTrayResetDate(claudeItem?.resetText) : "";
   const codexReset = mode === "weekly" ? formatTrayResetDate(codexItem?.resetText) : "";
 

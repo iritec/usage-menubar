@@ -94,10 +94,24 @@ test("normalizeCodexLabel keeps model-prefixed Codex limits unique", () => {
     "GPT-5.3-Codex-Spark Weekly limit",
   );
   assert.equal(
+    normalizeCodexLabel("GPT-5.3-Codex-Spark 1週間あたりの使用制限"),
+    "GPT-5.3-Codex-Spark Weekly limit",
+  );
+  assert.equal(
+    normalizeCodexLabel("GPT-5.3-Codex-Spark 週間利用上限"),
+    "GPT-5.3-Codex-Spark Weekly limit",
+  );
+  assert.equal(
     normalizeCodexLabel("GPT-5.3-Codex-Spark 5時間の使用制限"),
     "GPT-5.3-Codex-Spark 5-hour limit",
   );
+  assert.equal(
+    normalizeCodexLabel("GPT-5.3-Codex-Spark 5時間利用上限"),
+    "GPT-5.3-Codex-Spark 5-hour limit",
+  );
   assert.equal(normalizeCodexLabel("週あたりの使用制限"), "Weekly limit");
+  assert.equal(normalizeCodexLabel("1週間あたりの使用制限"), "Weekly limit");
+  assert.equal(normalizeCodexLabel("週間利用上限"), "Weekly limit");
 });
 
 test("looksLikeAuthPage detects login redirects", () => {
@@ -194,6 +208,65 @@ test("formatTrayTitle shows weekly reset dates in weekly mode", () => {
   }, "weekly");
 
   assert.equal(title, "C 88%(4/9)  O 56%(4/15)");
+});
+
+test("formatTrayTitle uses Codex weekly limit when wording includes one-week label", () => {
+  const codexItems = parseCodexUsage(`
+    使用状況ダッシュボード
+    残高
+    5時間の使用制限
+    96%
+    残り
+    リセット：17:16
+    1週間あたりの使用制限
+    80%
+    残り
+    リセット：2026/05/22 4:55
+  `);
+  const title = formatTrayTitle({
+    providers: {
+      claude: {
+        status: "ok",
+        items: [{ id: "weekly-all-models", remainingPercent: 92, resetText: "Resets: 5/22 9:00" }],
+      },
+      codex: {
+        status: "ok",
+        items: codexItems,
+      },
+    },
+  }, "weekly");
+
+  assert.equal(title, "C 92%(5/22)  O 80%(5/22)");
+});
+
+test("formatTrayTitle uses Codex weekly limit when wording is weekly usage cap", () => {
+  const codexItems = parseCodexUsage(`
+    使用状況ダッシュボード
+    残高
+    5時間の使用制限
+    77%
+    残り
+    リセット：10:40
+    週間利用上限
+    78%
+    残り
+    リセット：2026/05/27 4:30
+  `);
+  const title = formatTrayTitle({
+    providers: {
+      claude: {
+        status: "ok",
+        items: [{ id: "weekly-all-models", remainingPercent: 91, resetText: "Resets: 5/22 17:00" }],
+      },
+      codex: {
+        status: "ok",
+        items: codexItems,
+      },
+    },
+  }, "weekly");
+
+  assert.equal(codexItems[1].id, "weekly-limit");
+  assert.equal(title, "C 91%(5/22)  O 78%(5/27)");
 });
 
 test("formatTrayTitle keeps stale values while provider is loading", () => {

@@ -47,12 +47,6 @@
       "writeUpdateInfo": false
     }
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "electron",
-      "esbuild"
-    ]
-  },
   "devDependencies": {
     "electron": "^35.1.4",
     "electron-builder": "^25.1.8",

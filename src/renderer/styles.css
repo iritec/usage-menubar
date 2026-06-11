@@ -155,10 +155,16 @@ body {
 
 .provider-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
 .ghost-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   border: 1px solid rgba(148, 163, 184, 0.24);
   background: rgba(30, 41, 59, 0.82);
   color: var(--text);
@@ -191,6 +197,12 @@ body {
 .ghost-button:disabled {
   opacity: 0.5;
   pointer-events: none;
+}
+
+.button-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
 }
 
 .usage-item {

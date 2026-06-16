@@ -4,11 +4,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
-  getChromeIndexedDbStoragePaths,
   getChromeLastUsedProfilePath,
-  readStorageKeyMatches,
   selectChromeCookieProfile,
-  selectChromeStorageProfile,
 } = require("../src/chrome-profile");
 
 test("selectChromeCookieProfile prefers the last used Chrome profile over raw cookie count", () => {
@@ -72,36 +69,4 @@ test("getChromeLastUsedProfilePath resolves Chrome Local State profile.last_used
   );
 
   assert.equal(getChromeLastUsedProfilePath(chromeRoot), path.join(chromeRoot, "Profile 9"));
-});
-
-test("selectChromeStorageProfile prefers profiles with required storage keys", () => {
-  const cookieOnlyProfile = {
-    profilePath: "/Users/example/Library/Application Support/Google/Chrome/Profile 9",
-    score: 2,
-    foundKeys: ["keyval-store"],
-  };
-  const tokenProfile = {
-    profilePath: "/Users/example/Library/Application Support/Google/Chrome/Default",
-    score: 1,
-    foundKeys: ["authToken", "refreshToken"],
-  };
-
-  assert.equal(
-    selectChromeStorageProfile([cookieOnlyProfile, tokenProfile], cookieOnlyProfile.profilePath),
-    tokenProfile,
-  );
-});
-
-test("readStorageKeyMatches returns only required IndexedDB key names", (t) => {
-  const chromeProfile = fs.mkdtempSync(path.join(os.tmpdir(), "usage-menubar-storage-"));
-  t.after(() => fs.rmSync(chromeProfile, { recursive: true, force: true }));
-  const { levelDbPath } = getChromeIndexedDbStoragePaths(chromeProfile, "https_claude.ai_0.indexeddb");
-  fs.mkdirSync(levelDbPath, { recursive: true });
-  fs.writeFileSync(path.join(levelDbPath, "000003.log"), "prefix authToken middle refreshToken suffix payload");
-  fs.writeFileSync(path.join(levelDbPath, "IGNORED.txt"), "otherToken");
-
-  assert.deepEqual(readStorageKeyMatches(levelDbPath, ["authToken", "refreshToken", "otherToken"]), [
-    "authToken",
-    "refreshToken",
-  ]);
 });

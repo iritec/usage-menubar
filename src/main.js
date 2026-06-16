@@ -15,11 +15,8 @@ const {
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const {
-  getChromeIndexedDbStoragePaths,
   getChromeLastUsedProfilePath,
-  readStorageKeyMatches,
   selectChromeCookieProfile,
-  selectChromeStorageProfile,
 } = require("./chrome-profile");
 const { getExternalLoginCommand } = require("./external-login");
 const {
@@ -374,129 +371,6 @@ async function importChromeCookies(provider, options = {}) {
   }
 }
 
-function getPersistentPartitionPath(partition) {
-  if (!partition || !partition.startsWith("persist:")) {
-    return null;
-  }
-
-  return path.join(app.getPath("userData"), "Partitions", partition.replace(/^persist:/, ""));
-}
-
-function copyDirectory(sourcePath, targetPath) {
-  fs.rmSync(targetPath, { recursive: true, force: true });
-  if (!fs.existsSync(sourcePath)) {
-    return false;
-  }
-
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  fs.cpSync(sourcePath, targetPath, {
-    recursive: true,
-    force: true,
-    filter: (source) => path.basename(source) !== "LOCK",
-  });
-  return true;
-}
-
-async function importChromeStorage(provider, options = {}) {
-  const storage = provider.chromeStorage;
-  if (!storage) {
-    return {
-      importedStorage: false,
-      profilePath: null,
-      skipped: true,
-      reason: "no-storage-config",
-    };
-  }
-
-  try {
-    const chromeRoot = getChromeRoot();
-    const profiles = getChromeProfileDirs();
-    const matches = [];
-
-    for (const profilePath of profiles) {
-      const { levelDbPath, blobPath } = getChromeIndexedDbStoragePaths(profilePath, storage.indexedDbName);
-      if (!fs.existsSync(levelDbPath)) {
-        continue;
-      }
-
-      const foundKeys = readStorageKeyMatches(levelDbPath, storage.requiredKeys);
-      matches.push({
-        profilePath,
-        levelDbPath,
-        blobPath,
-        foundKeys,
-        requiredKeys: storage.requiredKeys,
-        score: foundKeys.length,
-      });
-    }
-
-    const best = selectChromeStorageProfile(
-      matches,
-      options.preferredProfilePath || getChromeLastUsedProfilePath(chromeRoot),
-      options.excludedProfilePaths || [],
-    );
-    if (!best) {
-      return {
-        importedStorage: false,
-        profilePath: null,
-        foundKeys: [],
-        skipped: true,
-        reason: "no-chrome-storage",
-      };
-    }
-
-    const targetPartitionPath = getPersistentPartitionPath(provider.partition);
-    if (!targetPartitionPath) {
-      return {
-        importedStorage: false,
-        profilePath: best.profilePath,
-        foundKeys: best.foundKeys,
-        error: "Persistent partition is required for storage import",
-      };
-    }
-
-    const targetSession = session.fromPartition(provider.partition);
-    try {
-      await targetSession.clearStorageData({
-        storages: ["appcache", "cachestorage", "indexdb", "localstorage", "serviceworkers", "websql"],
-        quotas: ["temporary", "syncable"],
-      });
-    } catch {}
-
-    const targetPaths = getChromeIndexedDbStoragePaths(targetPartitionPath, storage.indexedDbName);
-    const copied = [];
-    if (copyDirectory(best.levelDbPath, targetPaths.levelDbPath)) {
-      copied.push("leveldb");
-    }
-    if (copyDirectory(best.blobPath, targetPaths.blobPath)) {
-      copied.push("blob");
-    }
-
-    try {
-      await targetSession.flushStorageData();
-    } catch {}
-
-    return {
-      importedStorage: copied.length > 0,
-      profilePath: best.profilePath,
-      foundKeys: best.foundKeys,
-      copied,
-      hasMoreProfiles: matches.some(
-        (match) =>
-          match.profilePath !== best.profilePath
-          && !(options.excludedProfilePaths || []).includes(match.profilePath),
-      ),
-    };
-  } catch (error) {
-    return {
-      importedStorage: false,
-      profilePath: null,
-      foundKeys: [],
-      error: error.message || "Chrome storage import failed",
-    };
-  }
-}
-
 function formatResetTime(isoString) {
   if (!isoString) return null;
   try {
@@ -517,6 +391,14 @@ async function collectClaudeUsageViaApi(provider) {
 
   try {
     const orgsResponse = await ses.fetch(`${origin}/api/organizations`);
+
+    if (shouldIncludeVerboseDiagnostics()) {
+      console.info(`[${provider.id}] api /organizations ${JSON.stringify({
+        status: orgsResponse.status,
+        ok: orgsResponse.ok,
+        contentType: orgsResponse.headers.get("content-type") || null,
+      })}`);
+    }
 
     if (!orgsResponse.ok) {
       if (orgsResponse.status === 401 || orgsResponse.status === 403) {
@@ -611,10 +493,6 @@ const PROVIDERS = {
     loginMode: "external",
     partition: "persist:usage-claude",
     chromeDomains: ["claude.ai"],
-    chromeStorage: {
-      indexedDbName: "https_claude.ai_0.indexeddb",
-      requiredKeys: ["authToken", "refreshToken"],
-    },
     parser: parseClaudeUsage,
   },
   codex: {
@@ -833,24 +711,6 @@ function createChromeImportDiagnostic(importResult) {
     chromeImport: {
       importedCount: importResult.importedCount || 0,
       profilePath: importResult.profilePath || null,
-      error: importResult.error || null,
-      skipped: !!importResult.skipped,
-      reason: importResult.reason || null,
-    },
-  };
-}
-
-function createChromeStorageImportDiagnostic(importResult) {
-  if (!importResult) {
-    return null;
-  }
-
-  return {
-    chromeStorageImport: {
-      importedStorage: !!importResult.importedStorage,
-      profilePath: importResult.profilePath || null,
-      foundKeys: Array.isArray(importResult.foundKeys) ? importResult.foundKeys : [],
-      copied: Array.isArray(importResult.copied) ? importResult.copied : [],
       error: importResult.error || null,
       skipped: !!importResult.skipped,
       reason: importResult.reason || null,
@@ -1193,6 +1053,7 @@ async function collectUsageAtUrl(provider, usageUrl) {
       return createProviderResult("needs-auth", provider, `${provider.label} needs login`, {
         pageUrl: snapshot.url,
         errorCode: "needs-auth",
+        diagnostic: createSnapshotDiagnostic(snapshot),
       });
     }
 
@@ -1300,7 +1161,6 @@ async function refreshProvider(providerId, isManual = false, options = {}) {
     });
     let result = null;
     let importResult = null;
-    let storageImportResult = null;
     let cookieDiagnostic = null;
     const excludedProfilePaths = [];
 
@@ -1315,21 +1175,6 @@ async function refreshProvider(providerId, isManual = false, options = {}) {
             skipped: true,
             reason: "app-session-auth",
           };
-      if (shouldImportChromeCookies && provider.chromeStorage) {
-        storageImportResult = await importChromeStorage(provider, {
-          preferredProfilePath: importResult.profilePath || null,
-          excludedProfilePaths,
-        });
-      } else if (provider.chromeStorage) {
-        storageImportResult = {
-          importedStorage: false,
-          profilePath: null,
-          skipped: true,
-          reason: "app-session-auth",
-        };
-      } else {
-        storageImportResult = null;
-      }
       cookieDiagnostic = await getProviderCookieDiagnostic(provider).catch((error) => ({
         cookieError: error.message || "Cookie diagnostics failed",
       }));
@@ -1356,9 +1201,6 @@ async function refreshProvider(providerId, isManual = false, options = {}) {
       }
 
       excludedProfilePaths.push(importResult.profilePath);
-      if (storageImportResult?.profilePath && storageImportResult.profilePath !== importResult.profilePath) {
-        excludedProfilePaths.push(storageImportResult.profilePath);
-      }
     }
 
     if (!result) {
@@ -1402,16 +1244,24 @@ async function refreshProvider(providerId, isManual = false, options = {}) {
 
     const nextState = mergeProviderState(previousState, {
       ...result,
-      chromeConnected: importResult.importedCount > 0 || !!storageImportResult?.importedStorage,
+      chromeConnected: importResult.importedCount > 0,
       diagnostic: {
         ...(result.diagnostic && typeof result.diagnostic === "object" ? result.diagnostic : {}),
         ...(createChromeImportDiagnostic(importResult) || {}),
-        ...(createChromeStorageImportDiagnostic(storageImportResult) || {}),
         cookies: cookieDiagnostic,
       },
       lastUpdatedAt: new Date().toISOString(),
     });
     setProviderState(providerId, nextState);
+    if (shouldIncludeVerboseDiagnostics()) {
+      console.info(`[${providerId}] refresh result ${JSON.stringify({
+        status: nextState.status,
+        message: nextState.message,
+        errorCode: nextState.errorCode || null,
+        pageUrl: nextState.pageUrl || null,
+        diagnostic: nextState.diagnostic || null,
+      })}`);
+    }
     logProviderIssue(providerId, nextState);
   } catch (error) {
     const nextState = mergeProviderState(previousState, {

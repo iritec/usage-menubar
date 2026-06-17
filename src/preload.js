@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("usageMonitor", {
   getState: () => ipcRenderer.invoke("get-state"),
   refreshAll: () => ipcRenderer.invoke("refresh-all"),
   openLogin: (providerId) => ipcRenderer.invoke("open-login", providerId),
+  logoutProvider: (providerId) => ipcRenderer.invoke("logout-provider", providerId),
   openExternal: (providerId) => ipcRenderer.invoke("open-external", providerId),
   getTrayMode: () => ipcRenderer.invoke("get-tray-mode"),
   setTrayMode: (mode) => ipcRenderer.invoke("set-tray-mode", mode),

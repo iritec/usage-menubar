@@ -1,7 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  getUsageUrlCandidates,
+  getExternalLoginRefreshDelays,
+  getLoggedOutProviderState,
   shouldClearAppSessionAuth,
+  shouldFallbackToBrowserUsage,
+  shouldImportChromeCookiesForProvider,
+  shouldRefreshAfterExternalLogin,
   shouldMarkAppSessionAuth,
 } = require("../src/auth-state");
 const {
@@ -333,6 +339,94 @@ test("app session auth marker is cleared only when provider reports auth is miss
   assert.equal(shouldClearAppSessionAuth({ status: "needs-auth" }), true);
   assert.equal(shouldClearAppSessionAuth({ status: "error", errorCode: "challenge" }), false);
   assert.equal(shouldClearAppSessionAuth({ status: "ok" }), false);
+});
+
+test("external login providers still import Chrome cookies with a stale app session marker", () => {
+  assert.equal(
+    shouldImportChromeCookiesForProvider({
+      hasAppSessionAuth: true,
+      loginMode: "external",
+    }),
+    true,
+  );
+  assert.equal(
+    shouldImportChromeCookiesForProvider({
+      hasAppSessionAuth: true,
+      loginMode: "external",
+      skipChromeImport: true,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldImportChromeCookiesForProvider({
+      hasAppSessionAuth: true,
+    }),
+    false,
+  );
+});
+
+test("external login providers schedule a refresh after opening Chrome", () => {
+  assert.equal(shouldRefreshAfterExternalLogin("external"), true);
+  assert.equal(shouldRefreshAfterExternalLogin(undefined), false);
+});
+
+test("external login refresh schedule retries long enough for manual browser login", () => {
+  assert.deepEqual(getExternalLoginRefreshDelays("external"), [0, 5000, 15000, 30000, 60000, 120000]);
+  assert.deepEqual(getExternalLoginRefreshDelays(undefined), []);
+});
+
+test("Claude API auth failures fall back to browser usage scraping", () => {
+  assert.equal(shouldFallbackToBrowserUsage({ status: "needs-auth" }), true);
+  assert.equal(shouldFallbackToBrowserUsage({ status: "error" }), true);
+  assert.equal(shouldFallbackToBrowserUsage(null), true);
+  assert.equal(shouldFallbackToBrowserUsage({ status: "ok" }), false);
+});
+
+test("usage URL candidates try the primary URL before unique fallbacks", () => {
+  assert.deepEqual(
+    getUsageUrlCandidates({
+      url: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+      acceptedUrls: [
+        "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+        "https://chatgpt.com/codex/settings/analytics",
+        "https://chatgpt.com/codex/settings/usage",
+      ],
+    }),
+    [
+      "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+      "https://chatgpt.com/codex/settings/analytics",
+      "https://chatgpt.com/codex/settings/usage",
+    ],
+  );
+});
+
+test("provider logout state clears usage data and asks for login", () => {
+  assert.deepEqual(getLoggedOutProviderState("Claude"), {
+    status: "needs-auth",
+    chromeConnected: false,
+    items: [],
+    message: "Logged out of Claude in this app",
+    lastUpdatedAt: null,
+  });
+});
+
+test("provider action labels hide logout until usage is available", async () => {
+  const { getProviderActionLabels } = await import("../src/renderer/provider-actions.mjs");
+
+  assert.deepEqual(getProviderActionLabels("claude", { status: "needs-auth", items: [] }), [
+    "Login",
+    "Open",
+  ]);
+  assert.deepEqual(getProviderActionLabels("codex", { status: "loading", items: [] }), ["Open"]);
+  assert.deepEqual(getProviderActionLabels("codex", { status: "ok", items: [] }), [
+    "Logout",
+    "Open",
+  ]);
+  assert.deepEqual(getProviderActionLabels("codex", { status: "error", items: [{ id: "weekly" }] }), [
+    "Login",
+    "Logout",
+    "Open",
+  ]);
 });
 
 test("update state exposes safe action labels for renderer", () => {

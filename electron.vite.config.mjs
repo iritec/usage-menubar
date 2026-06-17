@@ -13,6 +13,8 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, "src/main.js"),
           "auth-state": resolve(__dirname, "src/auth-state.js"),
+          "chrome-profile": resolve(__dirname, "src/chrome-profile.js"),
+          "external-login": resolve(__dirname, "src/external-login.js"),
           parsers: resolve(__dirname, "src/parsers.js"),
           "update-state": resolve(__dirname, "src/update-state.js"),
         },

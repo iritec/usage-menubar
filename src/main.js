@@ -2,7 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
-const { execFileSync } = require("child_process");
+const { execFile, execFileSync } = require("child_process");
 const {
   app,
   BrowserWindow,
@@ -15,6 +15,11 @@ const {
 } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const {
+  getChromeLastUsedProfilePath,
+  selectChromeCookieProfile,
+} = require("./chrome-profile");
+const { getExternalLoginCommand } = require("./external-login");
+const {
   formatTrayTitle,
   isExpectedUsageLocation,
   looksLikeAuthPage,
@@ -24,7 +29,12 @@ const {
   parseCodexUsage,
 } = require("./parsers");
 const {
+  getLoggedOutProviderState,
+  getUsageUrlCandidates,
+  getExternalLoginRefreshDelays,
   shouldClearAppSessionAuth,
+  shouldFallbackToBrowserUsage,
+  shouldImportChromeCookiesForProvider,
   shouldMarkAppSessionAuth,
 } = require("./auth-state");
 const {
@@ -152,7 +162,7 @@ function getUpdateFeedOverride() {
 }
 
 function getChromeProfileDirs() {
-  const chromeRoot = path.join(os.homedir(), "Library", "Application Support", "Google", "Chrome");
+  const chromeRoot = getChromeRoot();
   if (!fs.existsSync(chromeRoot)) {
     return [];
   }
@@ -161,6 +171,10 @@ function getChromeProfileDirs() {
     .readdirSync(chromeRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && (entry.name === "Default" || entry.name.startsWith("Profile ")))
     .map((entry) => path.join(chromeRoot, entry.name));
+}
+
+function getChromeRoot() {
+  return path.join(os.homedir(), "Library", "Application Support", "Google", "Chrome");
 }
 
 function queryChromeCookies(cookieDbPath, domains) {
@@ -283,9 +297,10 @@ async function clearProviderCookies(targetSession, domains) {
   }
 }
 
-async function importChromeCookies(provider) {
+async function importChromeCookies(provider, options = {}) {
   try {
     const key = getChromeSafeStorageKey();
+    const chromeRoot = getChromeRoot();
     const profiles = getChromeProfileDirs();
     const matches = [];
 
@@ -308,8 +323,11 @@ async function importChromeCookies(provider) {
       } catch {}
     }
 
-    matches.sort((left, right) => right.cookies.length - left.cookies.length);
-    const best = matches[0];
+    const best = selectChromeCookieProfile(
+      matches,
+      getChromeLastUsedProfilePath(chromeRoot),
+      options.excludedProfilePaths || [],
+    );
     if (!best) {
       return { importedCount: 0, profilePath: null };
     }
@@ -335,7 +353,15 @@ async function importChromeCookies(provider) {
       } catch {}
     }
 
-    return { importedCount, profilePath: best.profilePath };
+    return {
+      importedCount,
+      profilePath: best.profilePath,
+      hasMoreProfiles: matches.some(
+        (match) =>
+          match.profilePath !== best.profilePath
+          && !(options.excludedProfilePaths || []).includes(match.profilePath),
+      ),
+    };
   } catch (error) {
     return {
       importedCount: 0,
@@ -365,6 +391,14 @@ async function collectClaudeUsageViaApi(provider) {
 
   try {
     const orgsResponse = await ses.fetch(`${origin}/api/organizations`);
+
+    if (shouldIncludeVerboseDiagnostics()) {
+      console.info(`[${provider.id}] api /organizations ${JSON.stringify({
+        status: orgsResponse.status,
+        ok: orgsResponse.ok,
+        contentType: orgsResponse.headers.get("content-type") || null,
+      })}`);
+    }
 
     if (!orgsResponse.ok) {
       if (orgsResponse.status === 401 || orgsResponse.status === 403) {
@@ -455,7 +489,8 @@ const PROVIDERS = {
   claude: {
     id: "claude",
     label: "Claude",
-    url: getEnvValue("USAGE_MONITOR_CLAUDE_URL") || "https://claude.ai/settings/usage",
+    url: getEnvValue("USAGE_MONITOR_CLAUDE_URL") || "https://claude.ai/new#settings/usage",
+    loginMode: "external",
     partition: "persist:usage-claude",
     chromeDomains: ["claude.ai"],
     parser: parseClaudeUsage,
@@ -472,6 +507,7 @@ const PROVIDERS = {
       LEGACY_CODEX_CLOUD_USAGE_URL,
       LEGACY_CODEX_USAGE_URL,
     ],
+    loginMode: "external",
     partition: "persist:usage-codex",
     chromeDomains: ["chatgpt.com", "openai.com"],
     pageLoadTimeoutMs: 30 * 1000,
@@ -740,6 +776,12 @@ async function clearProviderStorage(provider) {
   const targetSession = session.fromPartition(provider.partition);
   try {
     await targetSession.clearStorageData({
+      storages: ["cookies"],
+    });
+  } catch {}
+
+  try {
+    await targetSession.clearStorageData({
       storages: ["appcache", "cachestorage", "indexdb", "localstorage", "serviceworkers", "websql"],
       quotas: ["temporary", "syncable"],
     });
@@ -748,6 +790,24 @@ async function clearProviderStorage(provider) {
   try {
     await targetSession.clearCache();
   } catch {}
+}
+
+async function logoutProvider(providerId) {
+  const provider = PROVIDERS[providerId];
+  if (!provider) {
+    return null;
+  }
+
+  const existingTimer = loginRefreshTimers.get(providerId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    loginRefreshTimers.delete(providerId);
+  }
+
+  await clearProviderStorage(provider);
+  setAppSessionAuth(providerId, false);
+  setProviderState(providerId, getLoggedOutProviderState(provider.label));
+  return cloneState().providers[providerId];
 }
 
 function snapshotHasUsageContent(provider, snapshot) {
@@ -878,6 +938,23 @@ function isProviderOriginLocation(provider, currentUrl) {
 }
 
 async function collectUsage(provider) {
+  const urlCandidates = getUsageUrlCandidates(provider);
+  let lastResult = null;
+
+  for (const usageUrl of urlCandidates) {
+    const result = await collectUsageAtUrl(provider, usageUrl);
+    if (result.status === "ok" || result.status === "needs-auth" || urlCandidates.length === 1) {
+      return result;
+    }
+    lastResult = result;
+  }
+
+  return lastResult || createProviderResult("error", provider, `${provider.label} refresh returned no data`, {
+    errorCode: "empty-result",
+  });
+}
+
+async function collectUsageAtUrl(provider, usageUrl) {
   const authSession = session.fromPartition(provider.partition);
   let hiddenWindow = null;
 
@@ -892,17 +969,17 @@ async function collectUsage(provider) {
     try {
       await withTimeout(
         () =>
-          hiddenWindow.loadURL(provider.url, {
+          hiddenWindow.loadURL(usageUrl, {
             userAgent: HIDDEN_WINDOW_USER_AGENT,
           }),
         provider.pageLoadTimeoutMs || DEFAULT_HIDDEN_PAGE_LOAD_TIMEOUT_MS,
         () =>
           createTaggedError("timeout", `${provider.label} usage page load timed out`, {
-            pageUrl: hiddenWindow.webContents.getURL() || provider.url,
+            pageUrl: hiddenWindow.webContents.getURL() || usageUrl,
           }),
       );
     } catch (error) {
-      const redirectedUrl = hiddenWindow.webContents.getURL() || provider.url;
+      const redirectedUrl = hiddenWindow.webContents.getURL() || usageUrl;
       if (/ERR_ABORTED/i.test(error.message || "") || looksLikeAuthPage("", redirectedUrl)) {
         return createProviderResult("needs-auth", provider, `${provider.label} needs login`, {
           pageUrl: redirectedUrl,
@@ -966,7 +1043,7 @@ async function collectUsage(provider) {
           finalSnapshot?.url
           || error.pageUrl
           || hiddenWindow.webContents.getURL()
-          || provider.url,
+          || usageUrl,
         errorCode: error.code || "timeout",
         diagnostic: createSnapshotDiagnostic(finalSnapshot || error.snapshot || null),
       });
@@ -976,6 +1053,7 @@ async function collectUsage(provider) {
       return createProviderResult("needs-auth", provider, `${provider.label} needs login`, {
         pageUrl: snapshot.url,
         errorCode: "needs-auth",
+        diagnostic: createSnapshotDiagnostic(snapshot),
       });
     }
 
@@ -1076,30 +1154,53 @@ async function refreshProvider(providerId, isManual = false, options = {}) {
       await clearProviderStorage(provider);
     }
 
-    // Chrome import is a convenience path. Once a provider has logged in inside
-    // the Electron session, do not overwrite that session with browser cookies.
-    const shouldImportChromeCookies = !options.skipChromeImport && !hasAppSessionAuth(providerId);
-    const importResult = shouldImportChromeCookies
-      ? await importChromeCookies(provider)
-      : {
-          importedCount: 0,
-          profilePath: null,
-          skipped: true,
-          reason: "app-session-auth",
-        };
-    const importDiagnostic = createChromeImportDiagnostic(importResult);
-    const cookieDiagnostic = await getProviderCookieDiagnostic(provider).catch((error) => ({
-      cookieError: error.message || "Cookie diagnostics failed",
-    }));
-
+    const shouldImportChromeCookies = shouldImportChromeCookiesForProvider({
+      skipChromeImport: options.skipChromeImport,
+      hasAppSessionAuth: hasAppSessionAuth(providerId),
+      loginMode: provider.loginMode,
+    });
     let result = null;
+    let importResult = null;
+    let cookieDiagnostic = null;
+    const excludedProfilePaths = [];
 
-    if (providerId === "claude") {
-      // Claude: use direct API (no hidden BrowserWindow needed)
-      result = await collectClaudeUsageViaApi(provider);
-    } else {
-      // Codex: use hidden BrowserWindow scraping
-      result = await collectUsage(provider);
+    while (true) {
+      // Chrome import is a convenience path. Once a provider has logged in inside
+      // the Electron session, do not overwrite that session with browser cookies.
+      importResult = shouldImportChromeCookies
+        ? await importChromeCookies(provider, { excludedProfilePaths })
+        : {
+            importedCount: 0,
+            profilePath: null,
+            skipped: true,
+            reason: "app-session-auth",
+          };
+      cookieDiagnostic = await getProviderCookieDiagnostic(provider).catch((error) => ({
+        cookieError: error.message || "Cookie diagnostics failed",
+      }));
+
+      if (providerId === "claude") {
+        // Claude's API can reject direct fetches even when Chrome cookies are valid.
+        // Fall back to the BrowserWindow path so Cloudflare-verified sessions can still work.
+        result = await collectClaudeUsageViaApi(provider);
+        if (shouldFallbackToBrowserUsage(result)) {
+          result = await collectUsage(provider);
+        }
+      } else {
+        // Codex: use hidden BrowserWindow scraping
+        result = await collectUsage(provider);
+      }
+
+      if (
+        !shouldImportChromeCookies
+        || result?.status !== "needs-auth"
+        || !importResult.profilePath
+        || !importResult.hasMoreProfiles
+      ) {
+        break;
+      }
+
+      excludedProfilePaths.push(importResult.profilePath);
     }
 
     if (!result) {
@@ -1126,7 +1227,7 @@ async function refreshProvider(providerId, isManual = false, options = {}) {
     if (providerId === "codex" && result.status === "needs-auth") {
       result = {
         ...result,
-        message: `Log in to ${provider.label} in this app, then refresh`,
+        message: `Log in to ${provider.label} in Chrome, then return to this app`,
       };
     }
 
@@ -1137,7 +1238,7 @@ async function refreshProvider(providerId, isManual = false, options = {}) {
     ) {
       result = {
         ...result,
-        message: `Open ${provider.label} login in this app, then refresh`,
+        message: `Open ${provider.label} login in Chrome, then refresh`,
       };
     }
 
@@ -1146,12 +1247,21 @@ async function refreshProvider(providerId, isManual = false, options = {}) {
       chromeConnected: importResult.importedCount > 0,
       diagnostic: {
         ...(result.diagnostic && typeof result.diagnostic === "object" ? result.diagnostic : {}),
-        ...(importDiagnostic || {}),
+        ...(createChromeImportDiagnostic(importResult) || {}),
         cookies: cookieDiagnostic,
       },
       lastUpdatedAt: new Date().toISOString(),
     });
     setProviderState(providerId, nextState);
+    if (shouldIncludeVerboseDiagnostics()) {
+      console.info(`[${providerId}] refresh result ${JSON.stringify({
+        status: nextState.status,
+        message: nextState.message,
+        errorCode: nextState.errorCode || null,
+        pageUrl: nextState.pageUrl || null,
+        diagnostic: nextState.diagnostic || null,
+      })}`);
+    }
     logProviderIssue(providerId, nextState);
   } catch (error) {
     const nextState = mergeProviderState(previousState, {
@@ -1169,6 +1279,17 @@ async function refreshProvider(providerId, isManual = false, options = {}) {
 function openProviderLogin(providerId) {
   const provider = PROVIDERS[providerId];
   if (!provider) {
+    return;
+  }
+
+  if (provider.loginMode === "external") {
+    openExternalLoginUrl(provider.url);
+    setProviderState(providerId, mergeProviderState(state.providers[providerId], {
+      status: "needs-auth",
+      items: [],
+      message: `Log in to ${provider.label} in Chrome, then return to this app`,
+    }));
+    scheduleExternalLoginRefresh(provider);
     return;
   }
 
@@ -1309,6 +1430,57 @@ function openProviderLogin(providerId) {
       message: error.message || `${provider.label} login window failed to load`,
       errorCode: "login-load-failed",
     }));
+  });
+}
+
+function scheduleExternalLoginRefresh(provider) {
+  const delays = getExternalLoginRefreshDelays(provider.loginMode);
+  if (!delays.length) {
+    return;
+  }
+
+  const existingTimer = loginRefreshTimers.get(provider.id);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const runAttempt = (attemptIndex) => {
+    const timer = setTimeout(async () => {
+      loginRefreshTimers.delete(provider.id);
+      if (!state.isRefreshing) {
+        try {
+          await refreshProvider(provider.id, true);
+        } catch (error) {
+          setProviderState(provider.id, mergeProviderState(state.providers[provider.id], {
+            status: "error",
+            items: [],
+            message: error.message || `${provider.label} refresh failed after login`,
+            errorCode: error.code || "external-login-refresh-failed",
+          }));
+        }
+      }
+
+      if (state.providers[provider.id]?.status !== "ok" && attemptIndex + 1 < delays.length) {
+        runAttempt(attemptIndex + 1);
+      }
+    }, delays[attemptIndex]);
+    loginRefreshTimers.set(provider.id, timer);
+  };
+
+  runAttempt(0);
+}
+
+function openExternalLoginUrl(url) {
+  const command = getExternalLoginCommand(url);
+  if (!command) {
+    shell.openExternal(url);
+    return;
+  }
+
+  execFile(command.command, command.args, (error) => {
+    if (error) {
+      shell.openExternal(url);
+    }
   });
 }
 
@@ -1497,6 +1669,7 @@ ipcMain.handle("refresh-all", () => refreshAll(true));
 ipcMain.handle("open-login", (_event, providerId) => {
   openProviderLogin(providerId);
 });
+ipcMain.handle("logout-provider", (_event, providerId) => logoutProvider(providerId));
 ipcMain.handle("open-external", (_event, providerId) => {
   const provider = PROVIDERS[providerId];
   if (provider) {

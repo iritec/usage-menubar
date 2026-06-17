@@ -1,3 +1,5 @@
+import { getProviderActionLabels } from "./provider-actions.mjs";
+
 const providersRoot = document.getElementById("providers");
 const providerTemplate = document.getElementById("provider-template");
 const itemTemplate = document.getElementById("item-template");
@@ -31,6 +33,17 @@ function formatStatus(status) {
     default:
       return "Not loaded";
   }
+}
+
+function setButtonContent(button, iconPath, label) {
+  button.innerHTML =
+    `<svg class="button-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" `
+    + `stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">`
+    + iconPath
+    + "</svg>"
+    + `<span>${label}</span>`;
+  button.title = label;
+  button.setAttribute("aria-label", label);
 }
 
 function getProgressColorClass(percent) {
@@ -84,8 +97,7 @@ function renderProvider(providerId, provider) {
     ? `${provider.message || ""} Showing last successful snapshot.`.trim()
     : `${provider.message || ""}${provider.status === "error" ? formatDiagnosticMessage(provider) : ""}`.trim();
   fragment.querySelector(".provider-message").textContent = providerMessage;
-  const canLogin =
-    provider.status === "needs-auth" || (providerId === "codex" && provider.status === "error");
+  const actionLabels = getProviderActionLabels(providerId, provider);
 
   const itemList = fragment.querySelector(".item-list");
   if (provider.items.length) {
@@ -103,7 +115,7 @@ function renderProvider(providerId, provider) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
     if (provider.status === "needs-auth") {
-      const loginHint = "Log in inside this app, then press Refresh";
+      const loginHint = "Log in in Chrome, then return here";
       empty.innerHTML =
         '<svg class="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
         + `<span>${loginHint}</span>`;
@@ -116,8 +128,8 @@ function renderProvider(providerId, provider) {
   }
 
   const loginButton = fragment.querySelector(".login-button");
-  if (canLogin) {
-    loginButton.textContent = "Login";
+  if (actionLabels.includes("Login")) {
+    setButtonContent(loginButton, '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/>', "Login");
     loginButton.addEventListener("click", () => {
       window.usageMonitor.openLogin(providerId);
     });
@@ -125,7 +137,22 @@ function renderProvider(providerId, provider) {
     loginButton.remove();
   }
 
-  fragment.querySelector(".open-button").addEventListener("click", () => {
+  if (actionLabels.includes("Logout")) {
+    const logoutButton = document.createElement("button");
+    logoutButton.type = "button";
+    logoutButton.className = "ghost-button logout-button";
+    setButtonContent(logoutButton, '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>', "Logout");
+    logoutButton.addEventListener("click", async () => {
+      logoutButton.disabled = true;
+      logoutButton.textContent = "Logging out…";
+      await window.usageMonitor.logoutProvider(providerId);
+    });
+    fragment.querySelector(".provider-actions").prepend(logoutButton);
+  }
+
+  const openButton = fragment.querySelector(".open-button");
+  setButtonContent(openButton, '<path d="M15 3h6v6"/><path d="M10 14L21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>', "Open");
+  openButton.addEventListener("click", () => {
     window.usageMonitor.openExternal(providerId);
   });
 
